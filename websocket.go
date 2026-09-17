@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,8 +31,6 @@ type wsConnection struct {
 
 	heartbeatCancelMu sync.Mutex
 	heartbeatCancel   context.CancelFunc
-	missedPongCount   int32
-	maxMissedPong     int32
 
 	replyQueueMu sync.Mutex
 	replyQueues  map[string]*replyQueue
@@ -72,7 +71,6 @@ func newWSConnection(cfg Config, logger Logger) *wsConnection {
 	return &wsConnection{
 		cfg:              cfg,
 		logger:           logger,
-		maxMissedPong:    2,
 		replyQueues:      make(map[string]*replyQueue),
 		pendingAcks:      make(map[string]chan ackResult),
 		replyAckTimeout:  5 * time.Second,
@@ -115,7 +113,7 @@ func (w *wsConnection) run(ctx context.Context) {
 		}
 		first = false
 
-		reason, err := w.runSession(ctx)
+		reason, err := w.runSessionSafely(ctx)
 		if reason != "" {
 			w.emitDisconnected(reason)
 		}
@@ -123,6 +121,28 @@ func (w *wsConnection) run(ctx context.Context) {
 			w.emitError(err)
 		}
 	}
+}
+
+// runSessionSafely 给会话 goroutine 兜 panic：SDK 自己的 goroutine 里一旦 panic
+// 会把整个客户端打死（run 退出但 started 仍为 true，用户连 Connect 都救不回来，
+// 表现为永久假死、不报错、不重连）。这里把 panic 转成错误，交给外层按普通断线走重连。
+func (w *wsConnection) runSessionSafely(ctx context.Context) (reason string, err error) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		err = fmt.Errorf("会话处理 panic: %v", rec)
+		reason = err.Error()
+		w.logger.Error("%v\n%s", err, debug.Stack())
+		w.stopHeartbeat()
+		w.notifyPendingAckError(err)
+		if conn := w.getConn(); conn != nil {
+			_ = conn.Close()
+			w.setConn(nil)
+		}
+	}()
+	return w.runSession(ctx)
 }
 
 func (w *wsConnection) runSession(ctx context.Context) (string, error) {
@@ -134,7 +154,6 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 
 	w.setConn(conn)
 	w.resetReconnectAttempts()
-	atomic.StoreInt32(&w.missedPongCount, 0)
 	w.emitConnected()
 
 	if err := w.sendAuth(); err != nil {
@@ -166,6 +185,15 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 }
 
 func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
+	// 服务端保活 ping → 回 pong；服务端 pong → 忽略（防御性处理，当前服务端不发）。
+	switch frame.Cmd {
+	case WsCmdHeartbeat:
+		_ = w.sendRawFrame(WsFrame{Cmd: WsCmdPong, Headers: WsHeaders{ReqID: frame.Headers.ReqID}})
+		return
+	case WsCmdPong:
+		return
+	}
+
 	if frame.Cmd == WsCmdCallback || frame.Cmd == WsCmdEventCallback {
 		w.emitMessage(frame)
 		return
@@ -190,12 +218,12 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 		return
 	}
 
-	if strings.HasPrefix(reqID, WsCmdHeartbeat+"_") {
-		if frame.ErrCode == 0 {
-			atomic.StoreInt32(&w.missedPongCount, 0)
-			return
+	// 心跳 ACK：服务端回显 ping 的 req_id，但当前服务端并不会回（见 sendHeartbeat）。
+	// 这里只按 ACK 静默处理、不透传给消息处理器，避免把 ACK 当成消息。
+	if strings.HasPrefix(reqID, WsCmdHeartbeat+"_") || frame.Cmd == "" {
+		if frame.ErrCode != 0 {
+			w.logger.Warn("心跳 ACK 异常: reqid=%s errcode=%d errmsg=%s", reqID, frame.ErrCode, frame.ErrMsg)
 		}
-		w.logger.Warn("心跳 ACK 异常: errcode=%d errmsg=%s", frame.ErrCode, frame.ErrMsg)
 		return
 	}
 
@@ -206,7 +234,7 @@ func (w *wsConnection) disconnect() {
 	w.manualClose.Store(true)
 	w.started.Store(false)
 	w.stopHeartbeat()
-	w.notifyPendingAckError(errors.New("连接已手动关闭"))
+	w.notifyPendingAckError(fmt.Errorf("连接已手动关闭: %w", ErrNotConnected))
 	conn := w.getConn()
 	if conn != nil {
 		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "manual disconnect"), time.Now().Add(time.Second))
@@ -357,7 +385,7 @@ func (w *wsConnection) notifyPendingAckError(err error) {
 func (w *wsConnection) sendRawFrame(frame WsFrame) error {
 	conn := w.getConn()
 	if conn == nil {
-		return errors.New("WebSocket 未连接")
+		return ErrNotConnected
 	}
 
 	payload, err := json.Marshal(frame)

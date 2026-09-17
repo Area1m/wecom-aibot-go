@@ -6,6 +6,14 @@ import (
 	"sync"
 )
 
+// ErrNotConnected 表示 WebSocket 当前不可用——尚未连接、连接已断开或已手动关闭。
+// 此时回复/发送会立刻失败，可用 errors.Is 判断（例如等重连后再重试）：
+//
+//	if errors.Is(err, wecomaibot.ErrNotConnected) { /* 稍后重试 */ }
+var ErrNotConnected = errors.New("WebSocket 连接不可用")
+
+// Client 是企业微信智能机器人客户端：负责连接、认证、重连、消息分发与回复发送。
+// 用 NewClient 创建，注册好 OnXxx 回调后调用 Connect 开始工作。
 type Client struct {
 	cfg        Config
 	logger     Logger
@@ -20,8 +28,13 @@ type Client struct {
 	started   bool
 }
 
-func NewClient(cfg Config) *Client {
-	merged := fillDefaultConfig(cfg)
+// NewClient 创建客户端并填充默认配置（心跳间隔、重连间隔、请求超时、默认日志器等）。
+// BotID 或 Secret 为空时返回错误。
+func NewClient(cfg Config) (*Client, error) {
+	merged, err := fillDefaultConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	logger := merged.Logger
 	if logger == nil {
 		logger = NewDefaultLogger("AiBotSDK-Go")
@@ -37,19 +50,19 @@ func NewClient(cfg Config) *Client {
 		cancel:     cancel,
 	}
 
-	c.apiClient = newAPIClient(logger, merged.RequestTimeoutMS)
+	c.apiClient = newAPIClient(logger, merged.RequestTimeoutMS, merged.MaxDownloadBytes)
 	c.ws = newWSConnection(merged, logger)
 	c.bindWSCallbacks()
 
-	return c
+	return c, nil
 }
 
-func fillDefaultConfig(cfg Config) Config {
+func fillDefaultConfig(cfg Config) (Config, error) {
 	if cfg.BotID == "" {
-		panic("BotID 不能为空")
+		return Config{}, errors.New("BotID 不能为空")
 	}
 	if cfg.Secret == "" {
-		panic("Secret 不能为空")
+		return Config{}, errors.New("Secret 不能为空")
 	}
 	if cfg.ReconnectIntervalMS <= 0 {
 		cfg.ReconnectIntervalMS = DefaultReconnectInterval
@@ -63,10 +76,13 @@ func fillDefaultConfig(cfg Config) Config {
 	if cfg.RequestTimeoutMS <= 0 {
 		cfg.RequestTimeoutMS = DefaultRequestTimeout
 	}
+	if cfg.MaxDownloadBytes <= 0 {
+		cfg.MaxDownloadBytes = DefaultMaxDownloadBytes
+	}
 	if cfg.WSURL == "" {
 		cfg.WSURL = DefaultWSURL
 	}
-	return cfg
+	return cfg, nil
 }
 
 func (c *Client) bindWSCallbacks() {
@@ -90,6 +106,9 @@ func (c *Client) bindWSCallbacks() {
 	}
 }
 
+// Connect 开始连接（异步）：建连、认证都在后台 goroutine 里进行，认证成功触发
+// OnAuthenticated，中途失败会按配置自动重连并触发 OnReconnecting/OnError。
+// 重复调用是幂等的，已在运行时直接返回 nil。
 func (c *Client) Connect() error {
 	c.startedMu.Lock()
 	defer c.startedMu.Unlock()
@@ -105,6 +124,7 @@ func (c *Client) Connect() error {
 	return nil
 }
 
+// Disconnect 手动断开并停止重连（不会触发重连）。已在断开状态时是空操作。
 func (c *Client) Disconnect() {
 	c.startedMu.Lock()
 	defer c.startedMu.Unlock()
@@ -119,70 +139,87 @@ func (c *Client) Disconnect() {
 	c.ws.disconnect()
 }
 
+// IsConnected 返回当前 WebSocket 是否处于已连接状态（重连等待期间为 false）。
 func (c *Client) IsConnected() bool {
 	return c.ws.isConnected()
 }
 
+// API 返回底层 HTTP 能力客户端（目前用于文件下载等非 WebSocket 请求）。
 func (c *Client) API() *APIClient {
 	return c.apiClient
 }
 
+// OnConnected 注册连接建立（尚未认证）回调，可注册多个，均在独立 goroutine 中执行。
 func (c *Client) OnConnected(handler func(context.Context)) {
 	c.dispatcher.addConnectedHandler(handler)
 }
 
+// OnAuthenticated 注册认证成功回调——收到 aibot_subscribe 的成功 ACK 后触发。
 func (c *Client) OnAuthenticated(handler func(context.Context)) {
 	c.dispatcher.addAuthenticatedHandler(handler)
 }
 
+// OnDisconnected 注册断开回调，reason 为断开原因（服务端断开、心跳写失败、手动断开等）。
 func (c *Client) OnDisconnected(handler func(context.Context, string)) {
 	c.dispatcher.addDisconnectedHandler(handler)
 }
 
+// OnReconnecting 注册重连回调，attempt 为第几次重连尝试。
 func (c *Client) OnReconnecting(handler func(context.Context, int)) {
 	c.dispatcher.addReconnectingHandler(handler)
 }
 
+// OnError 注册错误回调（建连失败、认证失败、超过最大重连次数等）。
 func (c *Client) OnError(handler func(context.Context, error)) {
 	c.dispatcher.addErrorHandler(handler)
 }
 
+// OnMessage 注册所有消息的通用回调（先于按类型回调触发）。
 func (c *Client) OnMessage(handler func(context.Context, BaseMessage)) {
 	c.dispatcher.addMessageHandler(handler)
 }
 
+// OnText 注册文本消息回调。
 func (c *Client) OnText(handler func(context.Context, TextMessage)) {
 	c.dispatcher.addTextHandler(handler)
 }
 
+// OnImage 注册图片消息回调。
 func (c *Client) OnImage(handler func(context.Context, ImageMessage)) {
 	c.dispatcher.addImageHandler(handler)
 }
 
+// OnMixed 注册图文混排消息回调。
 func (c *Client) OnMixed(handler func(context.Context, MixedMessage)) {
 	c.dispatcher.addMixedHandler(handler)
 }
 
+// OnVoice 注册语音消息回调。
 func (c *Client) OnVoice(handler func(context.Context, VoiceMessage)) {
 	c.dispatcher.addVoiceHandler(handler)
 }
 
+// OnFile 注册文件消息回调。
 func (c *Client) OnFile(handler func(context.Context, FileMessage)) {
 	c.dispatcher.addFileHandler(handler)
 }
 
+// OnEvent 注册所有事件回调（先于按事件类型回调触发）。
 func (c *Client) OnEvent(handler func(context.Context, EventMessage)) {
 	c.dispatcher.addEventHandler(handler)
 }
 
+// OnEnterChat 注册进入会话事件回调（EventTypeEnterChat）。
 func (c *Client) OnEnterChat(handler func(context.Context, EventMessage)) {
 	c.dispatcher.addEnterChatHandler(handler)
 }
 
+// OnTemplateCardEvent 注册模板卡片事件回调（EventTypeTemplateCardEvent）。
 func (c *Client) OnTemplateCardEvent(handler func(context.Context, EventMessage)) {
 	c.dispatcher.addTemplateCardEventHandler(handler)
 }
 
+// OnFeedbackEvent 注册用户反馈事件回调（EventTypeFeedbackEvent）。
 func (c *Client) OnFeedbackEvent(handler func(context.Context, EventMessage)) {
 	c.dispatcher.addFeedbackEventHandler(handler)
 }

@@ -19,13 +19,16 @@ func main() {
 		log.Fatal("请先设置环境变量 WECOM_BOT_ID 和 WECOM_BOT_SECRET")
 	}
 
-	bot := wecomaibot.NewClient(wecomaibot.Config{
+	bot, err := wecomaibot.NewClient(wecomaibot.Config{
 		BotID:                botID,
 		Secret:               secret,
 		MaxReconnectAttempts: -1,
 		ReconnectIntervalMS:  1000,
 		HeartbeatIntervalMS:  30000,
 	})
+	if err != nil {
+		log.Fatalf("创建客户端失败: %v", err)
+	}
 
 	registerLifecycleLogs(bot)
 	registerBusinessHandlers(bot)

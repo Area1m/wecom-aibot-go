@@ -1,0 +1,18 @@
+# 构建产物
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# 依赖：本库不提交 vendor
+/vendor/
+
+# 本地配置与编辑器
+.env
+.env.local
+.idea/
+.vscode/
+.DS_Store

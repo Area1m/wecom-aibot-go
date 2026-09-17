@@ -1,5 +1,9 @@
 # wecom-aibot-go
 
+[![CI](https://github.com/Area1m/wecom-aibot-go/actions/workflows/ci.yml/badge.svg)](https://github.com/Area1m/wecom-aibot-go/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Area1m/wecom-aibot-go.svg)](https://pkg.go.dev/github.com/Area1m/wecom-aibot-go)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 企业微信智能机器人 Go SDK（Go 1.22+），基于 WebSocket 长连接通道，提供消息接收、流式回复、模板卡片、主动发送、文件下载与 AES 解密能力。
 
 - 默认连接地址：`wss://openws.work.weixin.qq.com`
@@ -10,7 +14,7 @@
 ## 功能特性
 
 - WebSocket 长连接与自动认证（`bot_id + secret`）
-- 心跳保活与异常连接判定
+- 心跳保活（`ping`）与断线自动重连
 - 指数退避重连（最大 30s）
 - 消息/事件自动分发（文本、图片、语音、文件、事件）
 - 同 `req_id` 串行回复队列与 ACK 等待
@@ -40,10 +44,13 @@ import (
 )
 
 func main() {
-  bot := wecomaibot.NewClient(wecomaibot.Config{
+  bot, err := wecomaibot.NewClient(wecomaibot.Config{
     BotID:  "your-bot-id",
     Secret: "your-bot-secret",
   })
+  if err != nil {
+    log.Fatalf("创建客户端失败: %v", err)
+  }
 
   bot.OnAuthenticated(func(ctx context.Context) {
     log.Println("认证成功")
@@ -64,6 +71,8 @@ func main() {
 }
 ```
 
+完整 API 文档见 [pkg.go.dev](https://pkg.go.dev/github.com/Area1m/wecom-aibot-go)。
+
 示例运行：
 
 - 基础示例：`go run ./examples`
@@ -79,8 +88,13 @@ func main() {
 - `MaxReconnectAttempts`：最大重连次数，默认 `10`，`-1` 表示无限
 - `HeartbeatIntervalMS`：心跳间隔，默认 `30000`
 - `RequestTimeoutMS`：HTTP 下载超时，默认 `10000`
+- `MaxDownloadBytes`：单次文件下载上限（字节），默认 `104857600`（100 MiB）
 - `WSURL`：WebSocket 地址，默认 `wss://openws.work.weixin.qq.com`
 - `Logger`：自定义日志器，默认 `DefaultLogger`
+
+> 心跳说明：WeCom 服务端收到客户端 `ping` 帧后不做任何响应（既不回 `pong`，也不回 ACK，实测），
+> 所以心跳只用于保活，**不会**因为「没收到心跳 ACK」而断开连接；连接失效由发送失败（写不出去）
+> 或服务端被动断开来发现，两者都会触发正常重连。
 
 ## 事件注册
 
@@ -139,6 +153,7 @@ bot.OnImage(func(ctx context.Context, msg wecomaibot.ImageMessage) {
 
 - 认证：`aibot_subscribe`
 - 心跳：`ping`
+- 心跳应答：`pong`（仅在服务端主动 ping 时回包，当前服务端不发）
 - 回复：`aibot_respond_msg`
 - 欢迎语回复：`aibot_respond_welcome_msg`
 - 更新卡片：`aibot_respond_update_msg`
@@ -150,22 +165,39 @@ bot.OnImage(func(ctx context.Context, msg wecomaibot.ImageMessage) {
 
 ```text
 wecom-aibot-go/
-  client.go
-  websocket.go
-  auth.go
-  heartbeat.go
-  reconnect.go
-  dispatcher.go
-  message.go
-  reply.go
-  api.go
-  crypto.go
-  logger.go
-  types.go
-  utils.go
+  doc.go            包文档与用法示例
+  client.go         客户端：连接、连接生命周期回调注册
+  websocket.go      WebSocket 会话、帧收发与 ACK 关联
+  auth.go           认证
+  heartbeat.go      心跳保活
+  reconnect.go      指数退避重连
+  dispatcher.go     消息/事件分发
+  reply.go          回复、流式回复与主动发送
+  api.go            HTTP 侧能力（文件下载）
+  crypto.go         AES-256-CBC 解密
+  logger.go         日志接口与默认实现
+  types.go          协议类型、常量与配置
+  utils.go          req_id 生成
   examples/main.go
   examples/production/main.go
+  .github/workflows/ci.yml
+  LICENSE
 ```
+
+## 开发与测试
+
+```bash
+gofmt -l .          # 检查格式
+go vet ./...        # 静态检查
+go test ./...       # 单元测试（含基于假 WebSocket 服务端的端到端用例）
+go test -race ./... # 竞态检测（需要 cgo）
+```
+
+CI 在 GitHub Actions 上跑 `gofmt` / `go vet` / `go build` / `go test -race`，覆盖 Go 1.22 及以上。
+
+## 开源协议
+
+[MIT](LICENSE)
 
 ## 生产模板说明
 

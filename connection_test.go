@@ -143,3 +143,73 @@ func TestDialFailureTriggersReconnect(t *testing.T) {
 		t.Error("拨号失败期间 IsConnected 应为 false")
 	}
 }
+
+// 被同 BotID 的新连接顶掉（disconnected_event）后，客户端不应自动重连（否则会顶回新连接形成互踢）。
+func TestDisconnectedEventStopsReconnect(t *testing.T) {
+	var subscribes int32
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var f WsFrameRaw
+			if err := json.Unmarshal(data, &f); err != nil {
+				return
+			}
+			if !strings.HasPrefix(f.Headers.ReqID, WsCmdSubscribe+"_") {
+				continue
+			}
+			atomic.AddInt32(&subscribes, 1)
+			_ = conn.WriteJSON(WsFrameRaw{Headers: WsHeaders{ReqID: f.Headers.ReqID}})
+			_ = conn.WriteJSON(map[string]any{
+				"cmd":     WsCmdEventCallback,
+				"headers": map[string]string{"req_id": "evt_1"},
+				"body": map[string]any{
+					"msgid": "e1", "create_time": 1, "aibotid": "bot", "msgtype": "event",
+					"event": map[string]any{"eventtype": EventTypeDisconnectedEvent},
+				},
+			})
+			_ = conn.Close()
+			return
+		}
+	}))
+	defer srv.Close()
+
+	bot, err := NewClient(Config{
+		BotID: "bot", Secret: "secret",
+		WSURL:               "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ReconnectIntervalMS: 50, MaxReconnectAttempts: -1, // 无限重连：若未阻止会持续重连
+		HeartbeatIntervalMS: 60000, Logger: silentTestLogger{},
+	})
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+	disconnected := make(chan EventMessage, 1)
+	bot.OnDisconnectedEvent(func(_ context.Context, m EventMessage) { disconnected <- m })
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	select {
+	case m := <-disconnected:
+		if m.Event.EventType != EventTypeDisconnectedEvent {
+			t.Errorf("disconnected_event 回调收到错误消息: %+v", m)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("未收到 disconnected_event 回调")
+	}
+
+	// 之后不应重连（subscribe 保持 1 次）
+	time.Sleep(300 * time.Millisecond)
+	if got := atomic.LoadInt32(&subscribes); got != 1 {
+		t.Errorf("disconnected_event 后不应重连: subscribes=%d", got)
+	}
+}

@@ -202,6 +202,21 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 
 func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 	if frame.Cmd == WsCmdCallback || frame.Cmd == WsCmdEventCallback {
+		// disconnected_event：同一 BotID 被新连接顶掉，服务端即将断开本连接。此时不能再自动
+		// 重连（否则会反过来顶掉新连接，形成互踢死循环），故标记手动关闭并复位启动状态，
+		// 让 Connect() 能干净重启。事件仍透传，用户可经 OnDisconnectedEvent 感知「被踢」。
+		if frame.Cmd == WsCmdEventCallback && isDisconnectedEvent(frame.Body) {
+			w.logger.Warn("收到 disconnected_event：连接被同 BotID 的新连接顶掉，停止自动重连")
+			w.manualClose.Store(true)
+			w.started.Store(false)
+			if w.onStopped != nil {
+				w.onStopped()
+			}
+			if conn := w.getConn(); conn != nil {
+				_ = conn.Close()
+				w.setConn(nil)
+			}
+		}
 		w.emitMessage(frame)
 		return
 	}
@@ -249,6 +264,19 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 	// 便于未来服务端新增帧类型时能及时暴露。
 	w.logger.Warn("收到未知帧: reqid=%s cmd=%s errcode=%d", reqID, frame.Cmd, frame.ErrCode)
 	w.emitMessage(frame)
+}
+
+// isDisconnectedEvent 判断事件回调是否为 disconnected_event（被同 BotID 的新连接顶掉）。
+func isDisconnectedEvent(body json.RawMessage) bool {
+	var parsed struct {
+		Event struct {
+			EventType string `json:"eventtype"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	return parsed.Event.EventType == EventTypeDisconnectedEvent
 }
 
 func (w *wsConnection) disconnect() {

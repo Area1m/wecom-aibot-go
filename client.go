@@ -12,6 +12,10 @@ import (
 //	if errors.Is(err, wecomaibot.ErrNotConnected) { /* 稍后重试 */ }
 var ErrNotConnected = errors.New("WebSocket 连接不可用")
 
+// ErrReconnectExhausted 表示重连次数耗尽（超过 MaxReconnectAttempts），客户端彻底停止。
+// 可用 errors.Is 判断，对齐官方 Node SDK 的 WSReconnectExhaustedError。
+var ErrReconnectExhausted = errors.New("超过最大重连次数")
+
 // Client 是企业微信智能机器人客户端：负责连接、认证、重连、消息分发与回复发送。
 // 用 NewClient 创建，注册好 OnXxx 回调后调用 Connect 开始工作。
 type Client struct {

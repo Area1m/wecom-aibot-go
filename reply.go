@@ -38,6 +38,17 @@ func (c *Client) ReplyStreamByID(req RequestCarrier, streamID string, content st
 	return c.Reply(req, body, WsCmdResponse)
 }
 
+// ReplyStreamNonBlocking 非阻塞流式回复（对齐官方 Node SDK replyStreamNonBlocking）：
+// 对非结束帧，若该 req_id 仍有待回执的回复则跳过（返回 skipped=true、不发送），避免流式比
+// ACK 快时积压队列；结束帧（finish=true）始终发送。
+func (c *Client) ReplyStreamNonBlocking(req RequestCarrier, streamID string, content string, finish bool, msgItem []ReplyMsgItem, feedback *ReplyFeedback) (frame WsFrameRaw, skipped bool, err error) {
+	if !finish && c.HasPendingAck(req.RequestID()) {
+		return WsFrameRaw{}, true, nil
+	}
+	f, err := c.ReplyStreamByID(req, streamID, content, finish, msgItem, feedback)
+	return f, false, err
+}
+
 // ReplyWelcome 发送欢迎语回复（对应官方 reply_welcome），body 支持文本或模板卡片格式。
 // 需在收到 enter_chat 事件后 5 秒内调用，否则服务端不再接受欢迎语。
 func (c *Client) ReplyWelcome(req RequestCarrier, body any) (WsFrameRaw, error) {

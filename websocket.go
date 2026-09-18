@@ -107,7 +107,7 @@ func (w *wsConnection) run(ctx context.Context) {
 				if w.onStopped != nil {
 					w.onStopped()
 				}
-				w.emitError(errors.New("超过最大重连次数"))
+				w.emitError(ErrReconnectExhausted)
 				return
 			}
 			delay := w.nextReconnectDelay(attempt)

@@ -31,6 +31,6 @@
 // 回调里未捕获的 panic 会终止整个进程（Go 的 goroutine 语义），需要调用方自行 recover
 // ——可参考 examples/production 里的 safeGo。
 //
-// 心跳只做保活：WeCom 服务端收到 ping 后不回 ACK，所以 SDK 不会因为「心跳没被应答」而
-// 断开连接；连接失效由发送失败或服务端被动断开发现，随后自动重连。
+// 心跳保活：服务端会回 ping 的 ACK（errcode:0），SDK 以「连续 2 次未收到 ACK」判定死连接并
+// 重连（对齐官方 Node SDK）；写失败或服务端被动断开同样会触发重连，半开连接由 TCP_USER_TIMEOUT 兜底。
 package wecomaibot

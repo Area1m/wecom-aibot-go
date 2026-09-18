@@ -10,11 +10,11 @@ import (
 // 作为 websocket.Dialer 的 NetDialContext 使用，从根上解决「日志静默、healthz 仍 OK、
 // 需重启恢复」的半开连接假死。
 //
-// 为什么必须用它：WeCom 空闲时既不回 ping、也不主动发任何数据，所以「读超时」和
-// 「心跳 ACK 超时」都会误杀健康但安静的空闲连接（上次提交特意去掉的自掐逻辑）；而
-// 客户端每 HeartbeatIntervalMS 发一次 ping，又让 TCP keepalive 永远等不到「空闲」。
-// 只有 TCP_USER_TIMEOUT 基于「发出的数据有没有被 ACK」，能精确区分「对端已死」与
-// 「对端健康但安静」。
+// 为什么必须用它：「读超时」会误杀健康但安静的空闲连接（服务端空闲时不主动发数据）；
+// 客户端每 HeartbeatIntervalMS 发一次 ping 又让 TCP keepalive 永远等不到「空闲」。
+// 只有 TCP_USER_TIMEOUT 基于「发出的数据有没有被 TCP ACK」，能精确区分「对端已死」与
+// 「对端健康但安静」，作为心跳 ACK 判据（连续 2 次未收到 ACK 即断）之外的第二道保险，
+// 兜底半开连接（服务端静默掐线、不发 FIN/RST）。
 func (w *wsConnection) dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
 	if err != nil {

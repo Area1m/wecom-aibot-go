@@ -261,3 +261,8 @@ func (c *Client) replyByReqID(reqID string, body any, cmd string) (WsFrameRaw, e
 	}
 	return c.ws.sendReply(reqID, body, cmd)
 }
+
+// HasPendingAck 返回指定 req_id 是否还有正在等待回执的回复（对齐官方 Node SDK，供流式场景避免积压）。
+func (c *Client) HasPendingAck(reqID string) bool {
+	return c.ws.hasPendingAck(reqID)
+}

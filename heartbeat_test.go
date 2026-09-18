@@ -22,8 +22,8 @@ func (silentTestLogger) Info(string, ...any)  {}
 func (silentTestLogger) Warn(string, ...any)  {}
 func (silentTestLogger) Error(string, ...any) {}
 
-// fakeWSServer 模拟 openws 服务端：回应 aibot_subscribe，但对客户端 ping 帧
-// 不做任何响应（与 WeCom 服务端实测行为一致：既不回 pong，也不回空 cmd ACK）。
+// fakeWSServer 模拟 openws 服务端：回应 aibot_subscribe，并对 ping 帧回心跳 ACK
+// （对齐官方文档/Node SDK：服务端会回 errcode=0 的 ACK）。
 type fakeWSServer struct {
 	srv *httptest.Server
 
@@ -54,8 +54,9 @@ func newFakeWSServer(t *testing.T) *fakeWSServer {
 				atomic.AddInt32(&f.subscribes, 1)
 				_ = conn.WriteJSON(WsFrame{Headers: WsHeaders{ReqID: frame.Headers.ReqID}})
 			case frame.Cmd == WsCmdHeartbeat:
-				// 关键：服务端不回 ACK，见 fakeWSServer 注释。
 				atomic.AddInt32(&f.pings, 1)
+				// 回心跳 ACK（透传 req_id、errcode=0），对齐官方文档与 Node SDK。
+				_ = conn.WriteJSON(WsFrame{Headers: WsHeaders{ReqID: frame.Headers.ReqID}})
 			}
 		}
 	}))
@@ -84,9 +85,8 @@ func newTestClient(t *testing.T, srv *fakeWSServer, intervalMS int) (*Client, *i
 	return bot, &disconnects, &reconnects
 }
 
-// 服务端对 ping 静默（WeCom 实测行为）时，客户端必须继续保活，不能自己掐断连接。
-// 修复前：missedPongCount 每 2 个心跳周期就 Close 一次，本用例会失败。
-func TestHeartbeatKeepsSilentServerAlive(t *testing.T) {
+// 服务端回心跳 ACK 时，missedPongCount 被清零，客户端应持续保活不误断。
+func TestHeartbeatKeepsAckingServerAlive(t *testing.T) {
 	srv := newFakeWSServer(t)
 	bot, disconnects, _ := newTestClient(t, srv, 20)
 
@@ -101,10 +101,65 @@ func TestHeartbeatKeepsSilentServerAlive(t *testing.T) {
 		t.Errorf("心跳发送次数不足: got %d, want >= 10", got)
 	}
 	if got := atomic.LoadInt32(disconnects); got != 0 {
-		t.Errorf("静默服务端下不应断开连接: disconnects=%d", got)
+		t.Errorf("有 ACK 服务端下不应断开连接: disconnects=%d", got)
 	}
 	if !bot.IsConnected() {
 		t.Error("连接应保持存活")
+	}
+}
+
+// 服务端不回心跳 ACK 时，客户端应在连续 maxMissedPong 次未收到 ACK 后判定连接已死并重连。
+func TestHeartbeatDetectsNonAckingServerDead(t *testing.T) {
+	var subscribes int32
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var frame WsFrameRaw
+			if err := json.Unmarshal(data, &frame); err != nil {
+				return
+			}
+			if strings.HasPrefix(frame.Headers.ReqID, WsCmdSubscribe+"_") {
+				atomic.AddInt32(&subscribes, 1)
+				_ = conn.WriteJSON(WsFrame{Headers: WsHeaders{ReqID: frame.Headers.ReqID}})
+				// 心跳帧故意不回 ACK，模拟死连接
+			}
+		}
+	}))
+	defer srv.Close()
+
+	bot, err := NewClient(Config{
+		BotID: "bot", Secret: "secret",
+		WSURL:               "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ReconnectIntervalMS: 50, MaxReconnectAttempts: -1,
+		HeartbeatIntervalMS: 50, Logger: silentTestLogger{},
+	})
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	// 连续 2 次未收到 ACK 后应主动断开并重连（subscribe 至少 2 次）。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&subscribes) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&subscribes); got < 2 {
+		t.Errorf("心跳无 ACK 应判定连接已死并重连: subscribes=%d", got)
 	}
 }
 

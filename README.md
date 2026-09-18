@@ -94,9 +94,9 @@ func main() {
 - `WSURL`：WebSocket 地址，默认 `wss://openws.work.weixin.qq.com`
 - `Logger`：自定义日志器，默认 `DefaultLogger`
 
-> 心跳说明：WeCom 服务端收到客户端 `ping` 帧后不做任何响应（既不回 `pong`，也不回 ACK，实测），
-> 所以心跳只用于保活，**不会**因为「没收到心跳 ACK」而断开连接；连接失效由发送失败（写不出去）
-> 或服务端被动断开来发现，两者都会触发正常重连。
+> 心跳说明：服务端收到客户端 `ping` 帧后会回 `errcode:0` 的 ACK（req_id 透传）。SDK 据此判定
+> 死连接：连续 2 次未收到心跳 ACK 即主动断开并重连（对齐官方 Node SDK）。此外连接失效还能由
+> 发送失败（写不出去）或服务端被动断开来发现；半开连接由 TCP_USER_TIMEOUT 兜底。
 
 ## 事件注册
 

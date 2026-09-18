@@ -305,7 +305,7 @@ func TestAuthAckTimeoutTriggersReconnect(t *testing.T) {
 
 // 认证成功后必须清除「等订阅 ACK」的读超时：否则健康连接会在 authTimeout 后被误断。
 func TestAuthSuccessClearsReadDeadline(t *testing.T) {
-	fs := newFakeWSServer(t) // 认证后静默：不回 ACK、不发消息
+	fs := newFakeWSServer(t) // 认证后不再发任何消息（心跳间隔 60s，测试窗口内无 ping）
 	bot, err := NewClient(Config{
 		BotID: "bot", Secret: "secret",
 		WSURL:               "ws" + strings.TrimPrefix(fs.srv.URL, "http"),

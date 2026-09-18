@@ -32,6 +32,8 @@ type wsConnection struct {
 	heartbeatCancelMu sync.Mutex
 	heartbeatCancel   context.CancelFunc
 
+	missedPongCount atomic.Int32 // 连续未收到心跳 ACK 的次数（对齐官方 Node SDK 的死连接判据）
+
 	replyQueueMu sync.Mutex
 	replyQueues  map[string]*replyQueue
 	pendingAcks  map[string]chan ackResult
@@ -255,7 +257,9 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 		if strings.HasPrefix(reqID, WsCmdHeartbeat+"_") {
 			if frame.ErrCode != 0 {
 				w.logger.Warn("心跳 ACK 异常: reqid=%s errcode=%d errmsg=%s", reqID, frame.ErrCode, frame.ErrMsg)
+				return
 			}
+			w.missedPongCount.Store(0)
 			return
 		}
 	}
@@ -321,6 +325,14 @@ func (w *wsConnection) sendReply(reqID string, body any, cmd string) (WsFrameRaw
 		},
 		Body: body,
 	})
+}
+
+// hasPendingAck 返回指定 req_id 是否还有正在等待回执的回复（供流式场景避免积压，对齐官方 Node SDK）。
+func (w *wsConnection) hasPendingAck(reqID string) bool {
+	w.replyQueueMu.Lock()
+	defer w.replyQueueMu.Unlock()
+	_, ok := w.pendingAcks[reqID]
+	return ok
 }
 
 func (w *wsConnection) acquireReplyQueue(reqID string) *replyQueue {

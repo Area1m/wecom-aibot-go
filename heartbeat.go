@@ -7,6 +7,8 @@ import (
 
 func (w *wsConnection) startHeartbeat(parent context.Context) {
 	w.stopHeartbeat()
+	// 新一轮心跳：清零未收到 ACK 的连续计数。
+	w.missedPongCount.Store(0)
 
 	ctx, cancel := context.WithCancel(parent)
 	w.heartbeatCancelMu.Lock()
@@ -36,17 +38,26 @@ func (w *wsConnection) stopHeartbeat() {
 	}
 }
 
-// sendHeartbeat 按 HeartbeatIntervalMS 周期发一个 ping 帧做保活。
+// maxMissedPong 是判定连接已死所需的「连续未收到心跳 ACK」次数（对齐官方 Node SDK）。
+const maxMissedPong = 2
+
+// sendHeartbeat 按 HeartbeatIntervalMS 周期发一个 ping 帧做保活，并以「连续 maxMissedPong
+// 次未收到心跳 ACK」作为死连接判据（对齐官方 Node SDK）：服务端会回 errcode=0 的 ACK
+// （req_id 前缀 ping_），收到即清零计数；连续 2 次未收到则判定连接已死，主动断开触发重连。
 //
-// 注意：WeCom 服务端收到客户端 ping 帧后不做任何响应——既不回 pong，也不回空 cmd
-// 的 ACK，与 req_id 形式无关（逐帧抓包实测）。因此不能把「没收到心跳 ACK」当作连接
-// 已死：一旦这么做，长时间静默的机器人每 2 个心跳周期就会被自己掐断一次，形成
-// 「断开→重连→再断开」的死循环（默认 30s 间隔时约 90s 一循环）。
-//
-// 连接是否已死改由以下两条路径发现，两者都会让读循环返回错误并进入正常重连：
-//   - 写失败：ping 写不出去说明连接不可用，这里主动 Close 提前触发重连；
-//   - 服务端被动断开：连接被服务端关闭时读循环会立刻返回错误。
+// 此外连接失效还能由写失败（ping 写不出去）或服务端被动断开来发现，两者都会走重连；
+// 半开连接（TCP 已死但无 FIN/RST）仍由 TCP_USER_TIMEOUT 兜底。
 func (w *wsConnection) sendHeartbeat() {
+	if w.missedPongCount.Load() >= maxMissedPong {
+		w.logger.Warn("连续 %d 次心跳未收到 ACK，判定连接已死，主动断开以触发重连", maxMissedPong)
+		if conn := w.getConn(); conn != nil {
+			_ = conn.Close()
+			w.setConn(nil)
+		}
+		return
+	}
+	w.missedPongCount.Add(1)
+
 	frame := WsFrame{
 		Cmd: WsCmdHeartbeat,
 		Headers: WsHeaders{

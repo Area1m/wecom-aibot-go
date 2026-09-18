@@ -9,6 +9,7 @@ const (
 	DefaultMaxReconnect      = 10
 	DefaultHeartbeatInterval = 30000
 	DefaultRequestTimeout    = 10000
+	DefaultTCPUserTimeout    = 60000     // 半开连接检测时限（TCP_USER_TIMEOUT，毫秒）
 	DefaultMaxDownloadBytes  = 100 << 20 // 100 MiB
 )
 
@@ -51,6 +52,7 @@ type Config struct {
 	MaxReconnectAttempts int    // 最大重连次数，默认 10；-1 表示无限重连
 	HeartbeatIntervalMS  int    // 心跳（ping）间隔（毫秒），默认 30000
 	RequestTimeoutMS     int    // HTTP 请求超时（毫秒），默认 10000，用于文件下载
+	TCPUserTimeoutMS     int    // 半开连接检测时限（毫秒），默认 60000；已发送数据超时未 ACK 即断开重连，仅 Linux 生效
 	MaxDownloadBytes     int    // 单次文件下载上限（字节），默认 100 MiB，防止异常大响应打爆内存
 	WSURL                string // WebSocket 地址，默认 wss://openws.work.weixin.qq.com
 	Logger               Logger // 日志实现，默认 DefaultLogger

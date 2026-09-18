@@ -31,7 +31,7 @@ func TestSetTCPUserTimeout(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := setTCPUserTimeout(conn, tcpUserTimeout); err != nil {
+	if err := setTCPUserTimeout(conn, time.Duration(DefaultTCPUserTimeout)*time.Millisecond); err != nil {
 		t.Fatalf("设置 TCP_USER_TIMEOUT 失败: %v", err)
 	}
 
@@ -50,7 +50,7 @@ func TestSetTCPUserTimeout(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("读回 TCP_USER_TIMEOUT 失败: %v", err)
 	}
-	want := int(tcpUserTimeout / time.Millisecond)
+	want := DefaultTCPUserTimeout // 单位毫秒，与 SetsockoptInt 传入值一致
 	if got != want {
 		t.Errorf("TCP_USER_TIMEOUT 读回 %dms, 期望 %dms", got, want)
 	}

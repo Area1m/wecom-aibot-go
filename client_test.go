@@ -35,6 +35,9 @@ func TestNewClientFillsDefaults(t *testing.T) {
 	if bot.cfg.TCPUserTimeoutMS != DefaultTCPUserTimeout {
 		t.Errorf("TCPUserTimeoutMS 默认值错误: %d", bot.cfg.TCPUserTimeoutMS)
 	}
+	if bot.cfg.AuthTimeoutMS != DefaultAuthTimeout {
+		t.Errorf("AuthTimeoutMS 默认值错误: %d", bot.cfg.AuthTimeoutMS)
+	}
 	if bot.cfg.WSURL != DefaultWSURL {
 		t.Errorf("WSURL 默认值错误: %s", bot.cfg.WSURL)
 	}

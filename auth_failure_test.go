@@ -245,3 +245,97 @@ func TestReconnectAfterGiveUp(t *testing.T) {
 		t.Errorf("再次 Connect 后应重新认证: before=%d after=%d", before, got)
 	}
 }
+
+// 订阅 ACK 迟迟不回（企微在 ACK 前静默掐线）时，读超时兜底应触发重连，而不是永久卡 connecting。
+func TestAuthAckTimeoutTriggersReconnect(t *testing.T) {
+	var subscribes int32
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var f WsFrameRaw
+			if err := json.Unmarshal(data, &f); err != nil {
+				return
+			}
+			if strings.HasPrefix(f.Headers.ReqID, WsCmdSubscribe+"_") {
+				atomic.AddInt32(&subscribes, 1)
+				// 故意不回 ACK，保持连接挂着，模拟「TCP 活着但应用层不回订阅 ACK」
+			}
+		}
+	}))
+	defer srv.Close()
+
+	bot, err := NewClient(Config{
+		BotID: "bot", Secret: "secret",
+		WSURL:               "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ReconnectIntervalMS: 50, MaxReconnectAttempts: -1,
+		HeartbeatIntervalMS: 60000,
+		AuthTimeoutMS:       100, // 缩短超时，避免测试拖 15s
+		Logger:              silentTestLogger{},
+	})
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+	var reconnects int32
+	bot.OnReconnecting(func(context.Context, int) { atomic.AddInt32(&reconnects, 1) })
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&subscribes) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&subscribes); got < 2 {
+		t.Fatalf("订阅 ACK 超时后应重连并重新 subscribe: subscribes=%d reconnects=%d", got, atomic.LoadInt32(&reconnects))
+	}
+}
+
+// 认证成功后必须清除「等订阅 ACK」的读超时：否则健康连接会在 authTimeout 后被误断。
+func TestAuthSuccessClearsReadDeadline(t *testing.T) {
+	fs := newFakeWSServer(t) // 认证后静默：不回 ACK、不发消息
+	bot, err := NewClient(Config{
+		BotID: "bot", Secret: "secret",
+		WSURL:               "ws" + strings.TrimPrefix(fs.srv.URL, "http"),
+		HeartbeatIntervalMS: 60000,
+		AuthTimeoutMS:       150, // 若清除失败，150ms 后就会误断
+		Logger:              silentTestLogger{},
+	})
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+	var disconnects int32
+	bot.OnDisconnected(func(context.Context, string) { atomic.AddInt32(&disconnects, 1) })
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	// 等认证成功，再静默远超 authTimeout 的时间，确认未被读超时误断。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&fs.subscribes) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(500 * time.Millisecond) // > 3× authTimeout
+	if got := atomic.LoadInt32(&disconnects); got != 0 {
+		t.Errorf("认证成功后不应被读超时误断: disconnects=%d", got)
+	}
+	if !bot.IsConnected() {
+		t.Error("认证成功后应保持连接")
+	}
+}

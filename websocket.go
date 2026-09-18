@@ -37,6 +37,7 @@ type wsConnection struct {
 	pendingAcks  map[string]chan ackResult
 
 	replyAckTimeout time.Duration
+	authTimeout     time.Duration
 
 	onConnected     func()
 	onAuthenticated func()
@@ -62,12 +63,18 @@ type ackResult struct {
 }
 
 func newWSConnection(cfg Config, logger Logger) *wsConnection {
+	authTimeout := time.Duration(cfg.AuthTimeoutMS) * time.Millisecond
+	if authTimeout <= 0 {
+		// 直接 newWSConnection 的测试路径可能未走 fillDefaultConfig，兜底到默认值。
+		authTimeout = time.Duration(DefaultAuthTimeout) * time.Millisecond
+	}
 	return &wsConnection{
 		cfg:             cfg,
 		logger:          logger,
 		replyQueues:     make(map[string]*replyQueue),
 		pendingAcks:     make(map[string]chan ackResult),
 		replyAckTimeout: 5 * time.Second,
+		authTimeout:     authTimeout,
 	}
 }
 
@@ -166,6 +173,11 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 		return "发送认证帧失败", err
 	}
 
+	// 认证帧已发出，进入等待订阅 ACK 的窗口：此窗口内心跳尚未启动，且认证帧被 TCP ACK 后
+	// 也没有未 ACK 数据可让 TCP_USER_TIMEOUT 触发，必须靠读超时兜底，否则企微静默掐线会
+	// 导致永久卡 connecting（前端「一直转圈」）。
+	_ = conn.SetReadDeadline(time.Now().Add(w.authTimeout))
+
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -214,6 +226,10 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 			// 认证成功才算一次稳定连接，此时才清零重连失败计数。不能放在拨号成功处：
 			// 那样「拨号成功但认证失败」每次都会清零，绕过 MaxReconnectAttempts 无限重试。
 			w.resetReconnectAttempts()
+			// 认证成功：清除「等待订阅 ACK」的读超时，恢复「无读超时 + 心跳保活」的常态。
+			if c := w.getConn(); c != nil {
+				_ = c.SetReadDeadline(time.Time{})
+			}
 			w.startHeartbeat(ctx)
 			w.emitAuthenticated()
 			return

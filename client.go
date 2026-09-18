@@ -79,6 +79,9 @@ func fillDefaultConfig(cfg Config) (Config, error) {
 	if cfg.TCPUserTimeoutMS <= 0 {
 		cfg.TCPUserTimeoutMS = DefaultTCPUserTimeout
 	}
+	if cfg.AuthTimeoutMS <= 0 {
+		cfg.AuthTimeoutMS = DefaultAuthTimeout
+	}
 	if cfg.MaxDownloadBytes <= 0 {
 		cfg.MaxDownloadBytes = DefaultMaxDownloadBytes
 	}

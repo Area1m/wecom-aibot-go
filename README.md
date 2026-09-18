@@ -88,6 +88,8 @@ func main() {
 - `MaxReconnectAttempts`：最大重连次数，默认 `10`；`-1` 表示无限；`0` 同样取默认 `10`
 - `HeartbeatIntervalMS`：心跳间隔，默认 `30000`
 - `RequestTimeoutMS`：HTTP 下载超时，默认 `10000`
+- `TCPUserTimeoutMS`：半开连接检测时限（毫秒），默认 `60000`，仅 Linux 生效
+- `AuthTimeoutMS`：等待订阅 ACK 的读超时（毫秒），默认 `15000`，超时未收到订阅 ACK 即重连
 - `MaxDownloadBytes`：单次文件下载上限（字节），默认 `104857600`（100 MiB）
 - `WSURL`：WebSocket 地址，默认 `wss://openws.work.weixin.qq.com`
 - `Logger`：自定义日志器，默认 `DefaultLogger`

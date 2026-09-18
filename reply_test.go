@@ -152,3 +152,85 @@ func TestReplyStreamEndToEnd(t *testing.T) {
 		t.Fatalf("主动发送失败: %v", err)
 	}
 }
+
+// 并发回复同一消息必须串行执行且不互相覆盖 pendingAcks：队列互斥锁保证同一 req_id
+// 同时只有一个 sendAndWaitAck 在途，否则两个协程会互相覆盖 pendingAcks[req_id] 的
+// 等待通道、导致 ACK 串扰。
+func TestConcurrentRepliesToSameMessage(t *testing.T) {
+	srv := newCallbackServer(t)
+	bot, err := NewClient(Config{
+		BotID:               "bot",
+		Secret:              "secret",
+		WSURL:               srv.url(),
+		HeartbeatIntervalMS: 200,
+		Logger:              silentTestLogger{},
+	})
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+
+	received := make(chan TextMessage, 1)
+	bot.OnText(func(_ context.Context, msg TextMessage) { received <- msg })
+
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	var msg TextMessage
+	select {
+	case msg = <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("未收到文本消息回调")
+	}
+
+	const n = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// 同一 req_id、不同 streamID，只有最后一个 finish=true
+			_, err := bot.ReplyStreamByID(msg, GenerateReqID("stream"), "chunk", i == n-1, nil, nil)
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("并发回复失败: %v", err)
+		}
+	}
+}
+
+// replyQueue 用引用计数做清理：并发 acquire/release 后 map 必须清空（refs 归零即删），
+// 既不能残留条目（内存泄漏），也不能误删仍被持有的队列（破坏串行）。
+func TestReplyQueueRefcountCleanup(t *testing.T) {
+	w := newWSConnection(Config{}, silentTestLogger{})
+
+	const goroutines = 50
+	const distinct = 10 // 故意碰撞，让部分 req_id 出现 refs>1 的并发持有
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			reqID := "req_" + string(rune('a'+i%distinct))
+			q := w.acquireReplyQueue(reqID)
+			q.mu.Lock()
+			q.mu.Unlock()
+			w.releaseReplyQueue(q)
+		}(i)
+	}
+	wg.Wait()
+
+	w.replyQueueMu.Lock()
+	n := len(w.replyQueues)
+	w.replyQueueMu.Unlock()
+	if n != 0 {
+		t.Errorf("所有队列释放后 replyQueues 应为空，实际 %d 条", n)
+	}
+}

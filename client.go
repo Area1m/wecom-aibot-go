@@ -87,23 +87,31 @@ func fillDefaultConfig(cfg Config) (Config, error) {
 
 func (c *Client) bindWSCallbacks() {
 	c.ws.onConnected = func() {
-		c.dispatcher.emitConnected(c.ctx)
+		c.dispatcher.emitConnected(c.getCtx())
 	}
 	c.ws.onAuthenticated = func() {
-		c.dispatcher.emitAuthenticated(c.ctx)
+		c.dispatcher.emitAuthenticated(c.getCtx())
 	}
 	c.ws.onDisconnected = func(reason string) {
-		c.dispatcher.emitDisconnected(c.ctx, reason)
+		c.dispatcher.emitDisconnected(c.getCtx(), reason)
 	}
 	c.ws.onReconnecting = func(attempt int) {
-		c.dispatcher.emitReconnecting(c.ctx, attempt)
+		c.dispatcher.emitReconnecting(c.getCtx(), attempt)
 	}
 	c.ws.onError = func(err error) {
-		c.dispatcher.emitError(c.ctx, err)
+		c.dispatcher.emitError(c.getCtx(), err)
 	}
 	c.ws.onMessage = func(frame WsFrameRaw) {
-		c.dispatcher.dispatchFrame(c.ctx, frame)
+		c.dispatcher.dispatchFrame(c.getCtx(), frame)
 	}
+}
+
+// getCtx 返回当前上下文。c.ctx 会被 Connect（Disconnect 后重启）改写，而这些回调
+// 在 ws 的 goroutine 里异步读取，必须用同一把锁保护，避免数据竞态。
+func (c *Client) getCtx() context.Context {
+	c.startedMu.Lock()
+	defer c.startedMu.Unlock()
+	return c.ctx
 }
 
 // Connect 开始连接（异步）：建连、认证都在后台 goroutine 里进行，认证成功触发

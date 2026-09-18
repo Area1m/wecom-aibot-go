@@ -36,19 +36,21 @@ func decryptFile(encryptedBuffer []byte, aesKey string) ([]byte, error) {
 	mode := cipher.NewCBCDecrypter(block, iv)
 	mode.CryptBlocks(decrypted, encryptedBuffer)
 
-	trimmed, err := trimPKCS7Padding32(decrypted)
+	trimmed, err := trimPKCS7Padding(decrypted)
 	if err != nil {
 		return nil, fmt.Errorf("decryptFile: 去除填充失败: %w", err)
 	}
 	return trimmed, nil
 }
 
-func trimPKCS7Padding32(data []byte) ([]byte, error) {
+func trimPKCS7Padding(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("空数据")
 	}
 	padLen := int(data[len(data)-1])
-	if padLen < 1 || padLen > 32 || padLen > len(data) {
+	// PKCS#7 填充值上限是块大小（AES 为 16），不是密钥长度 32；放宽到 32 会接受
+	// 非法填充并多剥 16 字节。
+	if padLen < 1 || padLen > aes.BlockSize || padLen > len(data) {
 		return nil, fmt.Errorf("非法 padding 值: %d", padLen)
 	}
 	for i := len(data) - padLen; i < len(data); i++ {

@@ -68,3 +68,14 @@ func TestDecryptFileRejectsInvalidInput(t *testing.T) {
 		}
 	}
 }
+
+// PKCS#7 填充值上限是块大小 16，不能放宽到 32（否则会接受非法填充并多剥字节）。
+func TestTrimPKCS7PaddingRejectsOverSizedPadding(t *testing.T) {
+	data := bytes.Repeat([]byte{32}, 32) // 末字节 = 32，超过块大小 16
+	if _, err := trimPKCS7Padding(data); err == nil {
+		t.Error("padding 值 32 超过块大小 16，应返回错误")
+	}
+	if _, err := trimPKCS7Padding([]byte{16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16}); err != nil {
+		t.Error("合法填充值 16 应被接受")
+	}
+}

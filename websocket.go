@@ -36,8 +36,7 @@ type wsConnection struct {
 	replyQueues  map[string]*replyQueue
 	pendingAcks  map[string]chan ackResult
 
-	replyAckTimeout  time.Duration
-	maxReplyQueueLen int
+	replyAckTimeout time.Duration
 
 	onConnected     func()
 	onAuthenticated func()
@@ -47,19 +46,13 @@ type wsConnection struct {
 	onMessage       func(frame WsFrameRaw)
 }
 
+// replyQueue 串行化同一 req_id 的回复：mu 保证前一条回复（含 ACK 等待）完成后
+// 才发下一条；refs 是引用计数，由 replyQueueMu 保护，归零时从 map 删除，避免
+// 为每个消息 ID 永久保留条目。
 type replyQueue struct {
 	reqID string
-	ch    chan replyTask
-}
-
-type replyTask struct {
-	frame  WsFrame
-	result chan replyResult
-}
-
-type replyResult struct {
-	frame WsFrameRaw
-	err   error
+	mu    sync.Mutex
+	refs  int
 }
 
 type ackResult struct {
@@ -69,12 +62,11 @@ type ackResult struct {
 
 func newWSConnection(cfg Config, logger Logger) *wsConnection {
 	return &wsConnection{
-		cfg:              cfg,
-		logger:           logger,
-		replyQueues:      make(map[string]*replyQueue),
-		pendingAcks:      make(map[string]chan ackResult),
-		replyAckTimeout:  5 * time.Second,
-		maxReplyQueueLen: 100,
+		cfg:             cfg,
+		logger:          logger,
+		replyQueues:     make(map[string]*replyQueue),
+		pendingAcks:     make(map[string]chan ackResult),
+		replyAckTimeout: 5 * time.Second,
 	}
 }
 
@@ -83,6 +75,9 @@ func (w *wsConnection) start(ctx context.Context) {
 		return
 	}
 	w.manualClose.Store(false)
+	// 每次重新启动都清零重连计数：否则上一轮重连耗尽后，Disconnect + Connect
+	// 重启时 reconnectAttempts 仍停在 max，拨号失败一次就立刻再次放弃。
+	w.resetReconnectAttempts()
 	go w.run(ctx)
 }
 
@@ -153,7 +148,6 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 	}
 
 	w.setConn(conn)
-	w.resetReconnectAttempts()
 	w.emitConnected()
 
 	if err := w.sendAuth(); err != nil {
@@ -211,8 +205,17 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 	if strings.HasPrefix(reqID, WsCmdSubscribe+"_") {
 		if frame.ErrCode != 0 {
 			w.emitError(fmt.Errorf("认证失败: errcode=%d errmsg=%s", frame.ErrCode, frame.ErrMsg))
+			// 认证被拒绝时主动关闭连接，让读循环返回并走正常重连；否则会停在
+			// 「已连接但未认证」的假死态——无心跳、无消息，IsConnected 仍为 true。
+			if conn := w.getConn(); conn != nil {
+				_ = conn.Close()
+				w.setConn(nil)
+			}
 			return
 		}
+		// 认证成功才算一次稳定连接，此时才清零重连失败计数。不能放在拨号成功处：
+		// 那样「拨号成功但认证失败」每次都会清零，绕过 MaxReconnectAttempts 无限重试。
+		w.resetReconnectAttempts()
 		w.startHeartbeat(ctx)
 		w.emitAuthenticated()
 		return
@@ -256,66 +259,45 @@ func (w *wsConnection) sendReply(reqID string, body any, cmd string) (WsFrameRaw
 		cmd = WsCmdResponse
 	}
 
-	queue := w.getOrCreateReplyQueue(reqID)
-	task := replyTask{
-		frame: WsFrame{
-			Cmd: cmd,
-			Headers: WsHeaders{
-				ReqID: reqID,
-			},
-			Body: body,
+	// 同一 req_id 的回复串行执行：acquire 加引用计数（保证清理安全），mu 保证
+	// 前一条回复的 ACK 等待完成前不发送下一条。发送+等待 ACK 在调用方 goroutine
+	// 内完成（reply 类 API 只从用户 handler 调用，不会阻塞读循环）。
+	q := w.acquireReplyQueue(reqID)
+	defer w.releaseReplyQueue(q)
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	return w.sendAndWaitAck(reqID, WsFrame{
+		Cmd: cmd,
+		Headers: WsHeaders{
+			ReqID: reqID,
 		},
-		result: make(chan replyResult, 1),
-	}
-
-	select {
-	case queue.ch <- task:
-	default:
-		return WsFrameRaw{}, fmt.Errorf("reqID=%s 的回复队列已满", reqID)
-	}
-
-	res := <-task.result
-	return res.frame, res.err
+		Body: body,
+	})
 }
 
-func (w *wsConnection) getOrCreateReplyQueue(reqID string) *replyQueue {
+func (w *wsConnection) acquireReplyQueue(reqID string) *replyQueue {
 	w.replyQueueMu.Lock()
 	defer w.replyQueueMu.Unlock()
 
-	if q, ok := w.replyQueues[reqID]; ok {
-		return q
+	q, ok := w.replyQueues[reqID]
+	if !ok {
+		q = &replyQueue{reqID: reqID}
+		w.replyQueues[reqID] = q
 	}
-	q := &replyQueue{
-		reqID: reqID,
-		ch:    make(chan replyTask, w.maxReplyQueueLen),
-	}
-	w.replyQueues[reqID] = q
-	go w.processReplyQueue(q)
+	q.refs++
 	return q
 }
 
-func (w *wsConnection) processReplyQueue(queue *replyQueue) {
-	idleTimer := time.NewTimer(2 * time.Minute)
-	defer idleTimer.Stop()
+func (w *wsConnection) releaseReplyQueue(q *replyQueue) {
+	w.replyQueueMu.Lock()
+	defer w.replyQueueMu.Unlock()
 
-	for {
-		select {
-		case task := <-queue.ch:
-			if !idleTimer.Stop() {
-				select {
-				case <-idleTimer.C:
-				default:
-				}
-			}
-			idleTimer.Reset(2 * time.Minute)
-			frame, err := w.sendAndWaitAck(queue.reqID, task.frame)
-			task.result <- replyResult{frame: frame, err: err}
-		case <-idleTimer.C:
-			w.replyQueueMu.Lock()
-			delete(w.replyQueues, queue.reqID)
-			w.replyQueueMu.Unlock()
-			return
-		}
+	// refs 归零说明没有调用方再持有该队列，可安全删除。acquire/release 都持
+	// replyQueueMu，refs>0 期间队列必在 map 中，因此这里 delete 不会误删别的条目。
+	if q.refs--; q.refs == 0 {
+		delete(w.replyQueues, q.reqID)
 	}
 }
 

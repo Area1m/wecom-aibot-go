@@ -116,10 +116,12 @@ func main() {
 - `OnMixed`
 - `OnVoice`
 - `OnFile`
+- `OnVideo`
 - `OnEvent`
 - `OnEnterChat`
 - `OnTemplateCardEvent`
 - `OnFeedbackEvent`
+- `OnDisconnectedEvent`
 
 ## 回复与发送 API
 

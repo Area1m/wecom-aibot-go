@@ -53,14 +53,17 @@ func DecryptFile(encryptedBuffer []byte, aesKey string) ([]byte, error) {
 	return trimmed, nil
 }
 
+// maxPKCS7Padding 是 PKCS#7 填充值的上界。官方文档写明「数据采用 PKCS#7 填充至 32 字节
+// 的倍数」，官方 Python SDK 也按 pad_len <= 32 校验，故这里对齐官方用 32，而不是 AES 块
+// 大小 16——否则会误拒企微按 32 字节填充的合法文件。
+const maxPKCS7Padding = 32
+
 func trimPKCS7Padding(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("空数据")
 	}
 	padLen := int(data[len(data)-1])
-	// PKCS#7 填充值上限是块大小（AES 为 16），不是密钥长度 32；放宽到 32 会接受
-	// 非法填充并多剥 16 字节。
-	if padLen < 1 || padLen > aes.BlockSize || padLen > len(data) {
+	if padLen < 1 || padLen > maxPKCS7Padding || padLen > len(data) {
 		return nil, fmt.Errorf("非法 padding 值: %d", padLen)
 	}
 	for i := len(data) - padLen; i < len(data); i++ {

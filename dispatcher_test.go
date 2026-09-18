@@ -56,6 +56,7 @@ func TestDispatchEventBranches(t *testing.T) {
 		{"enter_chat", EventTypeEnterChat, func(d *dispatcher, h func(context.Context, EventMessage)) { d.addEnterChatHandler(h) }},
 		{"template_card_event", EventTypeTemplateCardEvent, func(d *dispatcher, h func(context.Context, EventMessage)) { d.addTemplateCardEventHandler(h) }},
 		{"feedback_event", EventTypeFeedbackEvent, func(d *dispatcher, h func(context.Context, EventMessage)) { d.addFeedbackEventHandler(h) }},
+		{"disconnected_event", EventTypeDisconnectedEvent, func(d *dispatcher, h func(context.Context, EventMessage)) { d.addDisconnectedEventHandler(h) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -114,10 +115,12 @@ func TestDispatchMessageTypes(t *testing.T) {
 	mixed := make(chan MixedMessage, 1)
 	voice := make(chan VoiceMessage, 1)
 	file := make(chan FileMessage, 1)
+	video := make(chan VideoMessage, 1)
 	d.addImageHandler(func(_ context.Context, m ImageMessage) { image <- m })
 	d.addMixedHandler(func(_ context.Context, m MixedMessage) { mixed <- m })
 	d.addVoiceHandler(func(_ context.Context, m VoiceMessage) { voice <- m })
 	d.addFileHandler(func(_ context.Context, m FileMessage) { file <- m })
+	d.addVideoHandler(func(_ context.Context, m VideoMessage) { video <- m })
 
 	msgFrame := func(body map[string]any) WsFrameRaw {
 		return WsFrameRaw{Cmd: WsCmdCallback, Headers: WsHeaders{ReqID: "req_m"}, Body: mustBody(body)}
@@ -139,6 +142,10 @@ func TestDispatchMessageTypes(t *testing.T) {
 		"msgid": "4", "aibotid": "bot", "chattype": "single", "from": map[string]any{"userid": "u"},
 		"msgtype": "file", "file": map[string]any{"url": "http://x/f.bin", "aeskey": "k2"},
 	}))
+	d.dispatchMessage(context.Background(), msgFrame(map[string]any{
+		"msgid": "5", "aibotid": "bot", "chattype": "single", "from": map[string]any{"userid": "u"},
+		"msgtype": "video", "video": map[string]any{"url": "http://x/v.mp4", "aeskey": "k3"},
+	}))
 
 	img := recvTimeout(t, image, "图片回调")
 	if img.ReqID != "req_m" || img.Image.URL != "http://x/a.png" || img.Image.AESKey != "k1" {
@@ -155,6 +162,10 @@ func TestDispatchMessageTypes(t *testing.T) {
 	fl := recvTimeout(t, file, "文件回调")
 	if fl.ReqID != "req_m" || fl.File.URL != "http://x/f.bin" || fl.File.AESKey != "k2" {
 		t.Errorf("文件消息错误: %+v", fl)
+	}
+	vd := recvTimeout(t, video, "视频回调")
+	if vd.ReqID != "req_m" || vd.Video.URL != "http://x/v.mp4" || vd.Video.AESKey != "k3" {
+		t.Errorf("视频消息错误: %+v", vd)
 	}
 }
 

@@ -24,11 +24,13 @@ type dispatcher struct {
 	onMixed   []func(context.Context, MixedMessage)
 	onVoice   []func(context.Context, VoiceMessage)
 	onFile    []func(context.Context, FileMessage)
+	onVideo   []func(context.Context, VideoMessage)
 	onEvent   []func(context.Context, EventMessage)
 
 	onEnterChat         []func(context.Context, EventMessage)
 	onTemplateCardEvent []func(context.Context, EventMessage)
 	onFeedbackEvent     []func(context.Context, EventMessage)
+	onDisconnectedEvent []func(context.Context, EventMessage)
 }
 
 func newDispatcher(logger Logger) *dispatcher {
@@ -101,6 +103,12 @@ func (d *dispatcher) addFileHandler(handler func(context.Context, FileMessage)) 
 	d.onFile = append(d.onFile, handler)
 }
 
+func (d *dispatcher) addVideoHandler(handler func(context.Context, VideoMessage)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.onVideo = append(d.onVideo, handler)
+}
+
 func (d *dispatcher) addEventHandler(handler func(context.Context, EventMessage)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -123,6 +131,12 @@ func (d *dispatcher) addFeedbackEventHandler(handler func(context.Context, Event
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.onFeedbackEvent = append(d.onFeedbackEvent, handler)
+}
+
+func (d *dispatcher) addDisconnectedEventHandler(handler func(context.Context, EventMessage)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.onDisconnectedEvent = append(d.onDisconnectedEvent, handler)
 }
 
 func (d *dispatcher) emitConnected(ctx context.Context) {
@@ -196,6 +210,7 @@ func (d *dispatcher) dispatchMessage(ctx context.Context, frame WsFrameRaw) {
 	mixedHandlers := append([]func(context.Context, MixedMessage){}, d.onMixed...)
 	voiceHandlers := append([]func(context.Context, VoiceMessage){}, d.onVoice...)
 	fileHandlers := append([]func(context.Context, FileMessage){}, d.onFile...)
+	videoHandlers := append([]func(context.Context, VideoMessage){}, d.onVideo...)
 	d.mu.RUnlock()
 
 	for _, handler := range genericHandlers {
@@ -253,6 +268,16 @@ func (d *dispatcher) dispatchMessage(ctx context.Context, frame WsFrameRaw) {
 		for _, handler := range fileHandlers {
 			go handler(ctx, msg)
 		}
+	case MessageTypeVideo:
+		var msg VideoMessage
+		if err := json.Unmarshal(frame.Body, &msg); err != nil {
+			d.emitError(ctx, fmt.Errorf("解析视频消息失败: %w", err))
+			return
+		}
+		msg.ReqID = frame.Headers.ReqID
+		for _, handler := range videoHandlers {
+			go handler(ctx, msg)
+		}
 	default:
 		d.logger.Debug("收到未处理消息类型: %s", base.MsgType)
 	}
@@ -271,6 +296,7 @@ func (d *dispatcher) dispatchEvent(ctx context.Context, frame WsFrameRaw) {
 	enterHandlers := append([]func(context.Context, EventMessage){}, d.onEnterChat...)
 	cardHandlers := append([]func(context.Context, EventMessage){}, d.onTemplateCardEvent...)
 	feedbackHandlers := append([]func(context.Context, EventMessage){}, d.onFeedbackEvent...)
+	disconnectedHandlers := append([]func(context.Context, EventMessage){}, d.onDisconnectedEvent...)
 	d.mu.RUnlock()
 
 	for _, handler := range eventHandlers {
@@ -288,6 +314,10 @@ func (d *dispatcher) dispatchEvent(ctx context.Context, frame WsFrameRaw) {
 		}
 	case EventTypeFeedbackEvent:
 		for _, handler := range feedbackHandlers {
+			go handler(ctx, eventMsg)
+		}
+	case EventTypeDisconnectedEvent:
+		for _, handler := range disconnectedHandlers {
 			go handler(ctx, eventMsg)
 		}
 	default:

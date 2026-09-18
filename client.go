@@ -224,6 +224,11 @@ func (c *Client) OnFile(handler func(context.Context, FileMessage)) {
 	c.dispatcher.addFileHandler(handler)
 }
 
+// OnVideo 注册视频消息回调（仅单聊）。
+func (c *Client) OnVideo(handler func(context.Context, VideoMessage)) {
+	c.dispatcher.addVideoHandler(handler)
+}
+
 // OnEvent 注册所有事件回调（先于按事件类型回调触发）。
 func (c *Client) OnEvent(handler func(context.Context, EventMessage)) {
 	c.dispatcher.addEventHandler(handler)
@@ -242,6 +247,12 @@ func (c *Client) OnTemplateCardEvent(handler func(context.Context, EventMessage)
 // OnFeedbackEvent 注册用户反馈事件回调（EventTypeFeedbackEvent）。
 func (c *Client) OnFeedbackEvent(handler func(context.Context, EventMessage)) {
 	c.dispatcher.addFeedbackEventHandler(handler)
+}
+
+// OnDisconnectedEvent 注册连接断开事件回调（EventTypeDisconnectedEvent）：当同一 BotID 被
+// 新连接顶掉时，服务端会先发该事件再主动断开旧连接。可用它排查「多连接互踢」。
+func (c *Client) OnDisconnectedEvent(handler func(context.Context, EventMessage)) {
+	c.dispatcher.addDisconnectedEventHandler(handler)
 }
 
 func (c *Client) replyByReqID(reqID string, body any, cmd string) (WsFrameRaw, error) {

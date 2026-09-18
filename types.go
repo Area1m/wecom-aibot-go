@@ -33,6 +33,7 @@ const (
 	MessageTypeMixed = "mixed"
 	MessageTypeVoice = "voice"
 	MessageTypeFile  = "file"
+	MessageTypeVideo = "video"
 )
 
 // 事件类型（EventContent.EventType）。
@@ -40,6 +41,7 @@ const (
 	EventTypeEnterChat         = "enter_chat"
 	EventTypeTemplateCardEvent = "template_card_event"
 	EventTypeFeedbackEvent     = "feedback_event"
+	EventTypeDisconnectedEvent = "disconnected_event"
 )
 
 // 模板卡片类型（TemplateCard["card_type"]）。与官方 SDK 的 TemplateCardType 枚举一致。
@@ -128,6 +130,12 @@ type FileContent struct {
 	AESKey string `json:"aeskey,omitempty"`
 }
 
+// VideoContent 是视频内容（仅单聊），AESKey 非空时需解密后使用。
+type VideoContent struct {
+	URL    string `json:"url"`
+	AESKey string `json:"aeskey,omitempty"`
+}
+
 // MixedMsgItem 是图文混排中的一项。
 type MixedMsgItem struct {
 	MsgType string        `json:"msgtype"`
@@ -197,6 +205,12 @@ type VoiceMessage struct {
 type FileMessage struct {
 	BaseMessage
 	File FileContent `json:"file"`
+}
+
+// VideoMessage 是视频消息（仅单聊）。
+type VideoMessage struct {
+	BaseMessage
+	Video VideoContent `json:"video"`
 }
 
 // EventContent 是事件内容。

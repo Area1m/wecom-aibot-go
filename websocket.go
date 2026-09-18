@@ -141,7 +141,10 @@ func (w *wsConnection) runSessionSafely(ctx context.Context) (reason string, err
 }
 
 func (w *wsConnection) runSession(ctx context.Context) (string, error) {
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		NetDialContext:   w.dial,
+	}
 	conn, _, err := dialer.DialContext(ctx, w.cfg.WSURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("建立 WebSocket 连接失败: %w", err)

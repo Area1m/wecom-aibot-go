@@ -31,7 +31,9 @@ func newAPIClient(logger Logger, timeoutMS int, maxDownloadBytes int) *APIClient
 	}
 }
 
-func (c *APIClient) downloadFileRaw(urlStr string) (DownloadedFile, error) {
+// DownloadRaw 下载文件并返回原始字节与文件名（不参与解密）。文件名取自响应头
+// Content-Disposition。这是 Client.API() 暴露的底层能力，对应官方 SDK 的 download_file_raw。
+func (c *APIClient) DownloadRaw(urlStr string) (DownloadedFile, error) {
 	c.logger.Info("开始下载文件")
 	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
@@ -77,22 +79,23 @@ func parseFilename(contentDisposition string) string {
 		return ""
 	}
 
-	if v, ok := params["filename*"]; ok {
-		if idx := strings.Index(v, "''"); idx >= 0 {
-			// RFC 5987 的百分号编码，用 PathUnescape——QueryUnescape 会把文件名里
-			// 合法的 '+' 解成空格。
-			decoded, err := url.PathUnescape(v[idx+2:])
-			if err == nil {
-				return decoded
-			}
-		}
+	v, ok := params["filename"]
+	if !ok {
+		return ""
 	}
-	if v, ok := params["filename"]; ok {
-		decoded, err := url.PathUnescape(v)
-		if err == nil {
-			return decoded
-		}
+	// Go 的 mime.ParseMediaType 已把 RFC 5987 的 filename*=UTF-8''... 解码并折叠进
+	// filename 参数（params 里不会保留 filename* 键），续传形式 filename*0*= 同样会折叠。
+	// 此时值已被解码一次，若再 PathUnescape 一次就会双重解码，损坏文件名里字面的 %xx。
+	// 用 ToLower 后 Contains "filename*" 判断（不拼 '='），以同时覆盖 filename*= 与
+	// filename*0*= 续传形式。
+	if strings.Contains(strings.ToLower(contentDisposition), "filename*") {
 		return v
 	}
-	return ""
+	// 普通 filename 未做百分号解码，这里解码一次即与官方 urllib.unquote 对齐。
+	// 用 PathUnescape 而非 QueryUnescape，避免把合法的 '+' 解成空格。
+	decoded, err := url.PathUnescape(v)
+	if err == nil {
+		return decoded
+	}
+	return v
 }

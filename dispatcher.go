@@ -205,43 +205,53 @@ func (d *dispatcher) dispatchMessage(ctx context.Context, frame WsFrameRaw) {
 	switch base.MsgType {
 	case MessageTypeText:
 		var msg TextMessage
-		if err := json.Unmarshal(frame.Body, &msg); err == nil {
-			msg.ReqID = frame.Headers.ReqID
-			for _, handler := range textHandlers {
-				go handler(ctx, msg)
-			}
+		if err := json.Unmarshal(frame.Body, &msg); err != nil {
+			d.emitError(ctx, fmt.Errorf("解析文本消息失败: %w", err))
+			return
+		}
+		msg.ReqID = frame.Headers.ReqID
+		for _, handler := range textHandlers {
+			go handler(ctx, msg)
 		}
 	case MessageTypeImage:
 		var msg ImageMessage
-		if err := json.Unmarshal(frame.Body, &msg); err == nil {
-			msg.ReqID = frame.Headers.ReqID
-			for _, handler := range imageHandlers {
-				go handler(ctx, msg)
-			}
+		if err := json.Unmarshal(frame.Body, &msg); err != nil {
+			d.emitError(ctx, fmt.Errorf("解析图片消息失败: %w", err))
+			return
+		}
+		msg.ReqID = frame.Headers.ReqID
+		for _, handler := range imageHandlers {
+			go handler(ctx, msg)
 		}
 	case MessageTypeMixed:
 		var msg MixedMessage
-		if err := json.Unmarshal(frame.Body, &msg); err == nil {
-			msg.ReqID = frame.Headers.ReqID
-			for _, handler := range mixedHandlers {
-				go handler(ctx, msg)
-			}
+		if err := json.Unmarshal(frame.Body, &msg); err != nil {
+			d.emitError(ctx, fmt.Errorf("解析图文混排消息失败: %w", err))
+			return
+		}
+		msg.ReqID = frame.Headers.ReqID
+		for _, handler := range mixedHandlers {
+			go handler(ctx, msg)
 		}
 	case MessageTypeVoice:
 		var msg VoiceMessage
-		if err := json.Unmarshal(frame.Body, &msg); err == nil {
-			msg.ReqID = frame.Headers.ReqID
-			for _, handler := range voiceHandlers {
-				go handler(ctx, msg)
-			}
+		if err := json.Unmarshal(frame.Body, &msg); err != nil {
+			d.emitError(ctx, fmt.Errorf("解析语音消息失败: %w", err))
+			return
+		}
+		msg.ReqID = frame.Headers.ReqID
+		for _, handler := range voiceHandlers {
+			go handler(ctx, msg)
 		}
 	case MessageTypeFile:
 		var msg FileMessage
-		if err := json.Unmarshal(frame.Body, &msg); err == nil {
-			msg.ReqID = frame.Headers.ReqID
-			for _, handler := range fileHandlers {
-				go handler(ctx, msg)
-			}
+		if err := json.Unmarshal(frame.Body, &msg); err != nil {
+			d.emitError(ctx, fmt.Errorf("解析文件消息失败: %w", err))
+			return
+		}
+		msg.ReqID = frame.Headers.ReqID
+		for _, handler := range fileHandlers {
+			go handler(ctx, msg)
 		}
 	default:
 		d.logger.Debug("收到未处理消息类型: %s", base.MsgType)

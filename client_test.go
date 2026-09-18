@@ -51,7 +51,7 @@ func TestReplyWhenNotConnected(t *testing.T) {
 	}
 
 	msg := TextMessage{BaseMessage: BaseMessage{ReqID: "req_1"}}
-	_, err = bot.ReplyStream(msg, "hi")
+	_, err = bot.ReplyStreamByID(msg, GenerateReqID("stream"), "hi", true, nil, nil)
 	if !errors.Is(err, ErrNotConnected) {
 		t.Errorf("应返回 ErrNotConnected: got %v", err)
 	}
@@ -59,7 +59,7 @@ func TestReplyWhenNotConnected(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = bot.ReplyStream(msg, "hi again")
+		_, _ = bot.ReplyStreamByID(msg, GenerateReqID("stream"), "hi again", true, nil, nil)
 	}()
 	select {
 	case <-done:

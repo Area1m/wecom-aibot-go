@@ -16,12 +16,6 @@ func (c *Client) Reply(req RequestCarrier, body any, cmd string) (WsFrameRaw, er
 	return c.replyByReqID(req.RequestID(), body, cmd)
 }
 
-// ReplyStream 一次性流式回复：自动生成 streamID，直接发出结束帧（finish=true）。
-func (c *Client) ReplyStream(req RequestCarrier, content string) (WsFrameRaw, error) {
-	streamID := GenerateReqID("stream")
-	return c.ReplyStreamByID(req, streamID, content, true, nil, nil)
-}
-
 // ReplyStreamByID 完整流式回复控制：同一个 req 多次调用、复用同一个 streamID，
 // 先 finish=false 发中间内容，结束帧用 finish=true。msgItem 仅在结束帧生效。
 // feedback 非空时用于流式反馈。
@@ -44,19 +38,9 @@ func (c *Client) ReplyStreamByID(req RequestCarrier, streamID string, content st
 	return c.Reply(req, body, WsCmdResponse)
 }
 
-// ReplyWelcomeText 回复进入会话的欢迎语（纯文本）。需配合 OnEnterChat 使用。
-func (c *Client) ReplyWelcomeText(req RequestCarrier, content string) (WsFrameRaw, error) {
-	body := WelcomeTextReplyBody{MsgType: "text"}
-	body.Text.Content = content
-	return c.Reply(req, body, WsCmdResponseWelcome)
-}
-
-// ReplyWelcomeTemplateCard 用模板卡片回复欢迎语。
-func (c *Client) ReplyWelcomeTemplateCard(req RequestCarrier, card TemplateCard) (WsFrameRaw, error) {
-	body := WelcomeTemplateCardReplyBody{
-		MsgType:      "template_card",
-		TemplateCard: card,
-	}
+// ReplyWelcome 发送欢迎语回复（对应官方 reply_welcome），body 支持文本或模板卡片格式。
+// 需在收到 enter_chat 事件后 5 秒内调用，否则服务端不再接受欢迎语。
+func (c *Client) ReplyWelcome(req RequestCarrier, body any) (WsFrameRaw, error) {
 	return c.Reply(req, body, WsCmdResponseWelcome)
 }
 
@@ -109,62 +93,32 @@ func (c *Client) UpdateTemplateCard(req RequestCarrier, card TemplateCard, userI
 	return c.Reply(req, body, WsCmdResponseUpdate)
 }
 
-// SendMarkdown 主动发送 Markdown 消息到指定会话（不依赖收到的消息）。
-func (c *Client) SendMarkdown(chatID string, content string) (WsFrameRaw, error) {
+// SendMessage 主动发送消息（对应官方 send_message），无需依赖收到的回调帧。
+// body 为消息体（msgtype 及对应载荷），官方支持 markdown 与 template_card 两种 msgtype，
+// 发送时扁平展开为 {chatid, ...body}。
+func (c *Client) SendMessage(chatID string, body map[string]any) (WsFrameRaw, error) {
 	if chatID == "" {
 		return WsFrameRaw{}, fmt.Errorf("chatID 不能为空")
 	}
-	body := SendMarkdownMsgBody{MsgType: "markdown"}
-	body.Markdown.Content = content
-	return c.sendMessage(chatID, body)
-}
-
-// SendTemplateCard 主动发送模板卡片到指定会话（不依赖收到的消息）。
-func (c *Client) SendTemplateCard(chatID string, card TemplateCard) (WsFrameRaw, error) {
-	if chatID == "" {
-		return WsFrameRaw{}, fmt.Errorf("chatID 不能为空")
+	payload := make(map[string]any, len(body)+1)
+	payload["chatid"] = chatID
+	for k, v := range body {
+		payload[k] = v
 	}
-	body := SendTemplateCardMsgBody{
-		MsgType:      "template_card",
-		TemplateCard: card,
-	}
-	return c.sendMessage(chatID, body)
-}
-
-func (c *Client) sendMessage(chatID string, body any) (WsFrameRaw, error) {
-	reqID := GenerateReqID(WsCmdSendMsg)
-	payload := map[string]any{
-		"chatid": chatID,
-		"msg":    body,
-	}
-	switch v := body.(type) {
-	case SendMarkdownMsgBody:
-		payload = map[string]any{
-			"chatid":   chatID,
-			"msgtype":  v.MsgType,
-			"markdown": v.Markdown,
-		}
-	case SendTemplateCardMsgBody:
-		payload = map[string]any{
-			"chatid":        chatID,
-			"msgtype":       v.MsgType,
-			"template_card": v.TemplateCard,
-		}
-	}
-	return c.replyByReqID(reqID, payload, WsCmdSendMsg)
+	return c.replyByReqID(GenerateReqID(WsCmdSendMsg), payload, WsCmdSendMsg)
 }
 
 // DownloadFile 下载消息里的文件/图片；aesKey 非空时用 AES-256-CBC 解密（IV 取 key 前
 // 16 字节）并去除 PKCS#7 填充，为空时返回原始数据。单文件上限 100 MiB。
 func (c *Client) DownloadFile(url string, aesKey string) (DownloadedFile, error) {
-	downloaded, err := c.apiClient.downloadFileRaw(url)
+	downloaded, err := c.apiClient.DownloadRaw(url)
 	if err != nil {
 		return DownloadedFile{}, err
 	}
 	if aesKey == "" {
 		return downloaded, nil
 	}
-	buf, err := decryptFile(downloaded.Buffer, aesKey)
+	buf, err := DecryptFile(downloaded.Buffer, aesKey)
 	if err != nil {
 		return DownloadedFile{}, err
 	}

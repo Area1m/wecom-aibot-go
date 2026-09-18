@@ -46,7 +46,10 @@ func main() {
 	})
 
 	bot.OnEnterChat(func(ctx context.Context, msg wecomaibot.EventMessage) {
-		_, err := bot.ReplyWelcomeText(msg, "您好！我是企业微信智能助手（Go SDK）。")
+		_, err := bot.ReplyWelcome(msg, map[string]any{
+			"msgtype": "text",
+			"text":    map[string]any{"content": "您好！我是企业微信智能助手（Go SDK）。"},
+		})
 		if err != nil {
 			log.Printf("发送欢迎语失败: %v", err)
 		}

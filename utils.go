@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-func generateRandomString(length int) string {
+// GenerateRandomString 生成长度为 length 的随机十六进制字符串（对应官方 generate_random_string）。
+// length 小于等于 0 时回落到默认 8。
+func GenerateRandomString(length int) string {
 	if length <= 0 {
 		length = 8
 	}
@@ -33,5 +35,5 @@ func generateRandomString(length int) string {
 // GenerateReqID 生成请求 ID：<prefix>_<毫秒时间戳>_<8 位随机 hex>，用于认证、心跳、
 // 主动发送与流式回复的 streamID 等需要全局唯一标识的场景。
 func GenerateReqID(prefix string) string {
-	return fmt.Sprintf("%s_%d_%s", prefix, time.Now().UnixMilli(), generateRandomString(8))
+	return fmt.Sprintf("%s_%d_%s", prefix, time.Now().UnixMilli(), GenerateRandomString(8))
 }

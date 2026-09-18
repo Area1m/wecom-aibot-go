@@ -107,6 +107,12 @@ func (c *Client) bindWSCallbacks() {
 	c.ws.onMessage = func(frame WsFrameRaw) {
 		c.dispatcher.dispatchFrame(c.getCtx(), frame)
 	}
+	c.ws.onStopped = func() {
+		// 重连耗尽后复位 started，让后续 Connect() 能真正重启而非静默空操作。
+		c.startedMu.Lock()
+		c.started = false
+		c.startedMu.Unlock()
+	}
 }
 
 // getCtx 返回当前上下文。c.ctx 会被 Connect（Disconnect 后重启）改写，而这些回调

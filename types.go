@@ -17,7 +17,6 @@ const (
 const (
 	WsCmdSubscribe       = "aibot_subscribe"           // 认证
 	WsCmdHeartbeat       = "ping"                      // 心跳（服务端不回 ACK）
-	WsCmdPong            = "pong"                      // 心跳应答（仅服务端主动 ping 时回包）
 	WsCmdResponse        = "aibot_respond_msg"         // 回复消息/事件
 	WsCmdResponseWelcome = "aibot_respond_welcome_msg" // 欢迎语回复
 	WsCmdResponseUpdate  = "aibot_respond_update_msg"  // 更新模板卡片
@@ -33,7 +32,6 @@ const (
 	MessageTypeMixed = "mixed"
 	MessageTypeVoice = "voice"
 	MessageTypeFile  = "file"
-	MessageTypeEvent = "event"
 )
 
 // 事件类型（EventContent.EventType）。
@@ -41,6 +39,15 @@ const (
 	EventTypeEnterChat         = "enter_chat"
 	EventTypeTemplateCardEvent = "template_card_event"
 	EventTypeFeedbackEvent     = "feedback_event"
+)
+
+// 模板卡片类型（TemplateCard["card_type"]）。与官方 SDK 的 TemplateCardType 枚举一致。
+const (
+	TemplateCardTypeTextNotice          = "text_notice"
+	TemplateCardTypeNewsNotice          = "news_notice"
+	TemplateCardTypeButtonInteraction   = "button_interaction"
+	TemplateCardTypeVoteInteraction     = "vote_interaction"
+	TemplateCardTypeMultipleInteraction = "multiple_interaction"
 )
 
 // Config 是客户端配置。BotID / Secret 必填，其余字段留零值即用默认值。
@@ -232,8 +239,8 @@ type ReplyFeedback struct {
 // StreamPayload 是流式回复的内容体：同一个 ID 多次发送，最后以 Finish=true 结束。
 type StreamPayload struct {
 	ID       string         `json:"id"`
-	Finish   bool           `json:"finish,omitempty"`
-	Content  string         `json:"content,omitempty"`
+	Finish   bool           `json:"finish"`
+	Content  string         `json:"content"`
 	MsgItem  []ReplyMsgItem `json:"msg_item,omitempty"`
 	Feedback *ReplyFeedback `json:"feedback,omitempty"`
 }
@@ -242,20 +249,6 @@ type StreamPayload struct {
 type StreamReplyBody struct {
 	MsgType string        `json:"msgtype"`
 	Stream  StreamPayload `json:"stream"`
-}
-
-// WelcomeTextReplyBody 是文本欢迎语的消息体。
-type WelcomeTextReplyBody struct {
-	MsgType string `json:"msgtype"`
-	Text    struct {
-		Content string `json:"content"`
-	} `json:"text"`
-}
-
-// WelcomeTemplateCardReplyBody 是模板卡片欢迎语的消息体。
-type WelcomeTemplateCardReplyBody struct {
-	MsgType      string       `json:"msgtype"`
-	TemplateCard TemplateCard `json:"template_card"`
 }
 
 // TemplateCard 是模板卡片的原始 JSON 结构，字段随卡片类型而变，由调用方按企微文档填写。
@@ -278,20 +271,6 @@ type StreamWithTemplateCardReplyBody struct {
 type UpdateTemplateCardBody struct {
 	ResponseType string       `json:"response_type"`
 	UserIDs      []string     `json:"userids,omitempty"`
-	TemplateCard TemplateCard `json:"template_card"`
-}
-
-// SendMarkdownMsgBody 是主动发送 Markdown 的消息体。
-type SendMarkdownMsgBody struct {
-	MsgType  string `json:"msgtype"`
-	Markdown struct {
-		Content string `json:"content"`
-	} `json:"markdown"`
-}
-
-// SendTemplateCardMsgBody 是主动发送模板卡片的消息体。
-type SendTemplateCardMsgBody struct {
-	MsgType      string       `json:"msgtype"`
 	TemplateCard TemplateCard `json:"template_card"`
 }
 

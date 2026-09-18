@@ -57,7 +57,7 @@ func main() {
   })
 
   bot.OnText(func(ctx context.Context, msg wecomaibot.TextMessage) {
-    _, err := bot.ReplyStream(msg, "你好，我是 Go SDK 机器人")
+    _, err := bot.ReplyStreamByID(msg, wecomaibot.GenerateReqID("stream"), "你好，我是 Go SDK 机器人", true, nil, nil)
     if err != nil {
       log.Printf("回复失败: %v", err)
     }
@@ -85,7 +85,7 @@ func main() {
 - `BotID`：机器人 ID（必填）
 - `Secret`：机器人 Secret（必填）
 - `ReconnectIntervalMS`：重连基础间隔，默认 `1000`
-- `MaxReconnectAttempts`：最大重连次数，默认 `10`，`-1` 表示无限
+- `MaxReconnectAttempts`：最大重连次数，默认 `10`；`-1` 表示无限；`0` 同样取默认 `10`
 - `HeartbeatIntervalMS`：心跳间隔，默认 `30000`
 - `RequestTimeoutMS`：HTTP 下载超时，默认 `10000`
 - `MaxDownloadBytes`：单次文件下载上限（字节），默认 `104857600`（100 MiB）
@@ -122,14 +122,14 @@ func main() {
 ## 回复与发送 API
 
 - `Reply(req, body, cmd)`：通用回复
-- `ReplyStream(req, content)`：快速流式回复（单条结束）
 - `ReplyStreamByID(req, streamID, content, finish, msgItem, feedback)`：完整流式控制
-- `ReplyWelcomeText(req, content)` / `ReplyWelcomeTemplateCard(req, card)`
+- `ReplyWelcome(req, body)`：欢迎语回复（`body` 为文本或模板卡片消息体）
 - `ReplyTemplateCard(req, card, feedback)`
 - `ReplyStreamWithCard(req, streamID, content, finish, opts)`
 - `UpdateTemplateCard(req, card, userIDs)`
-- `SendMarkdown(chatID, content)`
-- `SendTemplateCard(chatID, card)`
+- `SendMessage(chatID, body)`：主动发送（`body` 为 `markdown` 或 `template_card` 消息体）
+
+模板卡片类型常量（对应 `template_card.card_type`）：`TemplateCardTypeTextNotice` / `TemplateCardTypeNewsNotice` / `TemplateCardTypeButtonInteraction` / `TemplateCardTypeVoteInteraction` / `TemplateCardTypeMultipleInteraction`。
 
 ## 文件下载与解密
 
@@ -148,12 +148,12 @@ bot.OnImage(func(ctx context.Context, msg wecomaibot.ImageMessage) {
 
 - 当 `aesKey` 为空时，返回原始下载数据
 - 有 `aesKey` 时，执行 AES-256-CBC 解密（IV 取 key 前 16 字节）并手动去除 PKCS#7 填充
+- 也可直接调用 `DecryptFile(buf, aesKey)` 对已下载的密文独立解密（对应官方 `decrypt_file`）
 
 ## 协议命令对照
 
 - 认证：`aibot_subscribe`
 - 心跳：`ping`
-- 心跳应答：`pong`（仅在服务端主动 ping 时回包，当前服务端不发）
 - 回复：`aibot_respond_msg`
 - 欢迎语回复：`aibot_respond_welcome_msg`
 - 更新卡片：`aibot_respond_update_msg`

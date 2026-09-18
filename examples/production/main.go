@@ -90,7 +90,10 @@ func registerBusinessHandlers(bot *wecomaibot.Client) {
 
 	bot.OnEnterChat(func(ctx context.Context, msg wecomaibot.EventMessage) {
 		safeGo("欢迎语处理", func() {
-			_, err := bot.ReplyWelcomeText(msg, "您好，我是企业微信智能机器人。")
+			_, err := bot.ReplyWelcome(msg, map[string]any{
+				"msgtype": "text",
+				"text":    map[string]any{"content": "您好，我是企业微信智能机器人。"},
+			})
 			if err != nil {
 				log.Printf("发送欢迎语失败: %v", err)
 			}
@@ -115,7 +118,10 @@ func replyWithRetry(bot *wecomaibot.Client, msg wecomaibot.TextMessage, streamID
 	}
 
 	if msg.ChatID != "" {
-		_, fallbackErr := bot.SendMarkdown(msg.ChatID, "系统繁忙，请稍后重试")
+		_, fallbackErr := bot.SendMessage(msg.ChatID, map[string]any{
+			"msgtype":  "markdown",
+			"markdown": map[string]any{"content": "系统繁忙，请稍后重试"},
+		})
 		if fallbackErr != nil {
 			log.Printf("降级发送失败: %v", fallbackErr)
 		}

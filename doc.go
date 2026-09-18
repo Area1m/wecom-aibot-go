@@ -13,7 +13,7 @@
 //	}
 //
 //	bot.OnText(func(ctx context.Context, msg wecomaibot.TextMessage) {
-//		if _, err := bot.ReplyStream(msg, "你好，我是 Go SDK 机器人"); err != nil {
+//		if _, err := bot.ReplyStreamByID(msg, wecomaibot.GenerateReqID("stream"), "你好，我是 Go SDK 机器人", true, nil, nil); err != nil {
 //			log.Printf("回复失败: %v", err)
 //		}
 //	})

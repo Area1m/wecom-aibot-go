@@ -162,3 +162,86 @@ func TestAuthFailureRespectsMaxReconnect(t *testing.T) {
 		t.Errorf("认证次数应停在 %d，实际 %d", maxAttempts+1, got)
 	}
 }
+
+// 重连耗尽（give-up）后不能永久假死：再次 Connect() 应能真正重启并重新开始认证，
+// 而不是因 started 未复位而被静默忽略。
+func TestReconnectAfterGiveUp(t *testing.T) {
+	var subscribes int32
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var frame WsFrameRaw
+			if err := json.Unmarshal(data, &frame); err != nil {
+				return
+			}
+			if !strings.HasPrefix(frame.Headers.ReqID, WsCmdSubscribe+"_") {
+				continue
+			}
+			atomic.AddInt32(&subscribes, 1)
+			_ = conn.WriteJSON(WsFrameRaw{Headers: WsHeaders{ReqID: frame.Headers.ReqID}, ErrCode: 1, ErrMsg: "bad secret"})
+		}
+	}))
+	defer srv.Close()
+
+	const maxAttempts = 2
+	bot, err := NewClient(Config{
+		BotID:                "bot",
+		Secret:               "secret",
+		WSURL:                "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ReconnectIntervalMS:  50,
+		MaxReconnectAttempts: maxAttempts,
+		HeartbeatIntervalMS:  200,
+		Logger:               silentTestLogger{},
+	})
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	var gaveUp int32
+	bot.OnError(func(_ context.Context, err error) {
+		if strings.Contains(err.Error(), "超过最大重连次数") {
+			atomic.AddInt32(&gaveUp, 1)
+		}
+	})
+
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&gaveUp) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&gaveUp) == 0 {
+		t.Fatalf("应在 %d 次重连后放弃", maxAttempts)
+	}
+
+	// 放弃后客户端应已复位，再次 Connect 能重新开始认证。
+	before := atomic.LoadInt32(&subscribes)
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("再次 Connect 失败: %v", err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&subscribes) > before {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&subscribes); got <= before {
+		t.Errorf("再次 Connect 后应重新认证: before=%d after=%d", before, got)
+	}
+}

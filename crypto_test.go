@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// encryptForTest 用与 decryptFile 约定一致的方案（AES-256-CBC，IV = key 前 16 字节，
+// encryptForTest 用与 DecryptFile 约定一致的方案（AES-256-CBC，IV = key 前 16 字节，
 // PKCS#7 填充）加密，用来做往返验证。
 func encryptForTest(t *testing.T, key, plaintext []byte) []byte {
 	t.Helper()
@@ -36,13 +36,31 @@ func TestDecryptFileRoundTrip(t *testing.T) {
 	}
 	for _, plaintext := range cases {
 		ciphertext := encryptForTest(t, key, []byte(plaintext))
-		got, err := decryptFile(ciphertext, aesKey)
+		got, err := DecryptFile(ciphertext, aesKey)
 		if err != nil {
 			t.Fatalf("解密失败 (plaintext len=%d): %v", len(plaintext), err)
 		}
 		if string(got) != plaintext {
 			t.Errorf("解密结果不一致: got %q, want %q", got, plaintext)
 		}
+	}
+}
+
+// 企微给的 aeskey 可能缺尾部 '=' padding（43 字符），解码需容错，与官方 Python 一致。
+func TestDecryptFileAcceptsUnpaddedAesKey(t *testing.T) {
+	key := bytes.Repeat([]byte{0x2a}, 32)
+	padded := base64.StdEncoding.EncodeToString(key) // 44 字符，含 '='
+	unpadded := strings.TrimRight(padded, "=")       // 43 字符，无 padding
+
+	plaintext := "hello unpadded"
+	ciphertext := encryptForTest(t, key, []byte(plaintext))
+
+	got, err := DecryptFile(ciphertext, unpadded)
+	if err != nil {
+		t.Fatalf("无 padding aeskey 应解码成功: %v", err)
+	}
+	if string(got) != plaintext {
+		t.Errorf("解密结果不一致: got %q, want %q", got, plaintext)
 	}
 }
 
@@ -63,7 +81,7 @@ func TestDecryptFileRejectsInvalidInput(t *testing.T) {
 		{"padding 非法（末字节为 0）", make([]byte, aes.BlockSize), aesKey},
 	}
 	for _, c := range cases {
-		if _, err := decryptFile(c.buf, c.aesKey); err == nil {
+		if _, err := DecryptFile(c.buf, c.aesKey); err == nil {
 			t.Errorf("%s: 应返回错误", c.name)
 		}
 	}
@@ -77,5 +95,44 @@ func TestTrimPKCS7PaddingRejectsOverSizedPadding(t *testing.T) {
 	}
 	if _, err := trimPKCS7Padding([]byte{16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16}); err != nil {
 		t.Error("合法填充值 16 应被接受")
+	}
+}
+
+// PKCS#7 填充边界：pad 值 1..16 均合法（剥掉全部填充后为空），0/17/32 非法。
+func TestTrimPKCS7PaddingBoundaries(t *testing.T) {
+	for p := 1; p <= 16; p++ {
+		data := bytes.Repeat([]byte{byte(p)}, p)
+		got, err := trimPKCS7Padding(data)
+		if err != nil {
+			t.Fatalf("pad=%d 应通过: %v", p, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("pad=%d 应剥掉全部填充，剩余 %d 字节", p, len(got))
+		}
+	}
+	for _, p := range []int{0, 17, 32} {
+		data := make([]byte, 32)
+		data[31] = byte(p)
+		if _, err := trimPKCS7Padding(data); err == nil {
+			t.Errorf("pad=%d 应报错", p)
+		}
+	}
+}
+
+func TestTrimPKCS7PaddingInconsistentBytes(t *testing.T) {
+	if _, err := trimPKCS7Padding([]byte{1, 2, 3, 4, 5, 5, 5, 5}); err == nil {
+		t.Error("padding 字节不一致应报错")
+	}
+}
+
+func TestTrimPKCS7PaddingEmpty(t *testing.T) {
+	if _, err := trimPKCS7Padding(nil); err == nil {
+		t.Error("空数据应报错")
+	}
+}
+
+func TestTrimPKCS7PaddingPadLargerThanData(t *testing.T) {
+	if _, err := trimPKCS7Padding([]byte{0x10}); err == nil {
+		t.Error("pad 值 16 大于数据长度 1，应报错")
 	}
 }

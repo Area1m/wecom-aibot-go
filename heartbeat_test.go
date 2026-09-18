@@ -29,15 +29,10 @@ type fakeWSServer struct {
 
 	subscribes int32
 	pings      int32
-
-	serverPing bool
-
-	pongMu     sync.Mutex
-	pongReqIDs []string
 }
 
 func newFakeWSServer(t *testing.T) *fakeWSServer {
-	f := &fakeWSServer{serverPing: false}
+	f := &fakeWSServer{}
 	upgrader := websocket.Upgrader{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -58,16 +53,6 @@ func newFakeWSServer(t *testing.T) *fakeWSServer {
 			case strings.HasPrefix(frame.Headers.ReqID, WsCmdSubscribe+"_"):
 				atomic.AddInt32(&f.subscribes, 1)
 				_ = conn.WriteJSON(WsFrame{Headers: WsHeaders{ReqID: frame.Headers.ReqID}})
-				if f.serverPing {
-					_ = conn.WriteJSON(WsFrame{
-						Cmd:     WsCmdHeartbeat,
-						Headers: WsHeaders{ReqID: "server_ping_1"},
-					})
-				}
-			case frame.Cmd == WsCmdPong:
-				f.pongMu.Lock()
-				f.pongReqIDs = append(f.pongReqIDs, frame.Headers.ReqID)
-				f.pongMu.Unlock()
 			case frame.Cmd == WsCmdHeartbeat:
 				// 关键：服务端不回 ACK，见 fakeWSServer 注释。
 				atomic.AddInt32(&f.pings, 1)
@@ -76,12 +61,6 @@ func newFakeWSServer(t *testing.T) *fakeWSServer {
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
-}
-
-func (f *fakeWSServer) pongs() []string {
-	f.pongMu.Lock()
-	defer f.pongMu.Unlock()
-	return append([]string(nil), f.pongReqIDs...)
 }
 
 func newTestClient(t *testing.T, srv *fakeWSServer, intervalMS int) (*Client, *int32, *int32) {
@@ -126,35 +105,6 @@ func TestHeartbeatKeepsSilentServerAlive(t *testing.T) {
 	}
 	if !bot.IsConnected() {
 		t.Error("连接应保持存活")
-	}
-}
-
-// 服务端主动发 ping 时应回 pong（防御性处理，当前服务端不发）。
-func TestHeartbeatRepliesPongToServerPing(t *testing.T) {
-	srv := newFakeWSServer(t)
-	srv.serverPing = true
-	bot, _, _ := newTestClient(t, srv, 20)
-
-	if err := bot.Connect(); err != nil {
-		t.Fatalf("连接失败: %v", err)
-	}
-	defer bot.Disconnect()
-
-	// 等服务端 ping 被回 pong，同时等至少一次心跳（心跳周期 20ms，晚于认证帧）。
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(srv.pongs()) > 0 && atomic.LoadInt32(&srv.pings) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	pongs := srv.pongs()
-	if len(pongs) != 1 || pongs[0] != "server_ping_1" {
-		t.Errorf("应回带原 req_id 的 pong: got %v", pongs)
-	}
-	if got := atomic.LoadInt32(&srv.pings); got == 0 {
-		t.Error("客户端应仍在发送心跳")
 	}
 }
 
@@ -220,5 +170,28 @@ func TestDisconnectTriggersReconnect(t *testing.T) {
 
 	if got := atomic.LoadInt32(&subscribes); got < 2 {
 		t.Errorf("断线后应重新认证: subscribes=%d, reconnects=%d", got, atomic.LoadInt32(&reconnects))
+	}
+}
+
+// 心跳写失败时应主动把 conn 置空（锁住注释承诺的「写失败 → 断开 → 触发重连」路径）。
+func TestSendHeartbeatWriteFailureClosesConn(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("拨号失败: %v", err)
+	}
+	_ = conn.Close() // 主动关闭，使后续写必然失败
+
+	w := newWSConnection(Config{}, silentTestLogger{})
+	w.setConn(conn)
+	w.sendHeartbeat()
+	if w.isConnected() {
+		t.Error("心跳写失败后 conn 应被置空")
 	}
 }

@@ -44,6 +44,7 @@ type wsConnection struct {
 	onReconnecting  func(attempt int)
 	onError         func(err error)
 	onMessage       func(frame WsFrameRaw)
+	onStopped       func() // 重连耗尽彻底停止时回调，供 Client 复位 started 状态
 }
 
 // replyQueue 串行化同一 req_id 的回复：mu 保证前一条回复（含 ACK 等待）完成后
@@ -91,6 +92,12 @@ func (w *wsConnection) run(ctx context.Context) {
 		if !first {
 			attempt, ok := w.registerReconnectAttempt()
 			if !ok {
+				// 复位启动状态：否则 give-up 后 started 仍为 true，Connect() 会静默空操作，
+				// 客户端永久假死，只能靠 Disconnect()+Connect() 手动复活。
+				w.started.Store(false)
+				if w.onStopped != nil {
+					w.onStopped()
+				}
 				w.emitError(errors.New("超过最大重连次数"))
 				return
 			}
@@ -182,57 +189,49 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 }
 
 func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
-	// 服务端保活 ping → 回 pong；服务端 pong → 忽略（防御性处理，当前服务端不发）。
-	switch frame.Cmd {
-	case WsCmdHeartbeat:
-		_ = w.sendRawFrame(WsFrame{Cmd: WsCmdPong, Headers: WsHeaders{ReqID: frame.Headers.ReqID}})
-		return
-	case WsCmdPong:
-		return
-	}
-
 	if frame.Cmd == WsCmdCallback || frame.Cmd == WsCmdEventCallback {
 		w.emitMessage(frame)
 		return
 	}
 
 	reqID := frame.Headers.ReqID
-	if reqID == "" {
-		return
-	}
+	if reqID != "" {
+		if w.resolveAck(reqID, frame) {
+			return
+		}
 
-	if w.resolveAck(reqID, frame) {
-		return
-	}
+		if strings.HasPrefix(reqID, WsCmdSubscribe+"_") {
+			if frame.ErrCode != 0 {
+				w.emitError(fmt.Errorf("认证失败: errcode=%d errmsg=%s", frame.ErrCode, frame.ErrMsg))
+				// 认证被拒绝时主动关闭连接，让读循环返回并走正常重连；否则会停在
+				// 「已连接但未认证」的假死态——无心跳、无消息，IsConnected 仍为 true。
+				if conn := w.getConn(); conn != nil {
+					_ = conn.Close()
+					w.setConn(nil)
+				}
+				return
+			}
+			// 认证成功才算一次稳定连接，此时才清零重连失败计数。不能放在拨号成功处：
+			// 那样「拨号成功但认证失败」每次都会清零，绕过 MaxReconnectAttempts 无限重试。
+			w.resetReconnectAttempts()
+			w.startHeartbeat(ctx)
+			w.emitAuthenticated()
+			return
+		}
 
-	if strings.HasPrefix(reqID, WsCmdSubscribe+"_") {
-		if frame.ErrCode != 0 {
-			w.emitError(fmt.Errorf("认证失败: errcode=%d errmsg=%s", frame.ErrCode, frame.ErrMsg))
-			// 认证被拒绝时主动关闭连接，让读循环返回并走正常重连；否则会停在
-			// 「已连接但未认证」的假死态——无心跳、无消息，IsConnected 仍为 true。
-			if conn := w.getConn(); conn != nil {
-				_ = conn.Close()
-				w.setConn(nil)
+		// 心跳 ACK：服务端回显 ping 的 req_id，但当前服务端并不会回（见 sendHeartbeat）。
+		// 这里只按 ACK 静默处理、不透传给消息处理器，避免把 ACK 当成消息。
+		if strings.HasPrefix(reqID, WsCmdHeartbeat+"_") {
+			if frame.ErrCode != 0 {
+				w.logger.Warn("心跳 ACK 异常: reqid=%s errcode=%d errmsg=%s", reqID, frame.ErrCode, frame.ErrMsg)
 			}
 			return
 		}
-		// 认证成功才算一次稳定连接，此时才清零重连失败计数。不能放在拨号成功处：
-		// 那样「拨号成功但认证失败」每次都会清零，绕过 MaxReconnectAttempts 无限重试。
-		w.resetReconnectAttempts()
-		w.startHeartbeat(ctx)
-		w.emitAuthenticated()
-		return
 	}
 
-	// 心跳 ACK：服务端回显 ping 的 req_id，但当前服务端并不会回（见 sendHeartbeat）。
-	// 这里只按 ACK 静默处理、不透传给消息处理器，避免把 ACK 当成消息。
-	if strings.HasPrefix(reqID, WsCmdHeartbeat+"_") || frame.Cmd == "" {
-		if frame.ErrCode != 0 {
-			w.logger.Warn("心跳 ACK 异常: reqid=%s errcode=%d errmsg=%s", reqID, frame.ErrCode, frame.ErrMsg)
-		}
-		return
-	}
-
+	// 与官方一致：无法归类的帧记录 warn 并透传给消息处理器，而非静默丢弃，
+	// 便于未来服务端新增帧类型时能及时暴露。
+	w.logger.Warn("收到未知帧: reqid=%s cmd=%s errcode=%d", reqID, frame.Cmd, frame.ErrCode)
 	w.emitMessage(frame)
 }
 

@@ -131,9 +131,17 @@ func replyWithRetry(bot *wecomaibot.Client, msg wecomaibot.TextMessage, streamID
 }
 
 func startHealthServer(bot *wecomaibot.Client) {
+	// 半开连接从「真死」到「心跳判死」约有 2×心跳间隔（这里心跳 30s，约 60s）的僵尸窗口，
+	// 期间 IsConnected 仍为 true 但收不到任何消息。healthz 额外用「最近收到数据时间」兜底：
+	// 超过 2×心跳间隔 + 余量仍未收到任何数据（含心跳 ACK）即判不健康。
+	const livenessWindow = 2*30*time.Second + 10*time.Second
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if bot.IsConnected() {
+		last := bot.LastReceivedAt()
+		// last 为零值表示刚连接、还没收到第一帧（认证 ACK 未回），视为启动期正常。
+		alive := bot.IsConnected() && (last.IsZero() || time.Since(last) < livenessWindow)
+		if alive {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 			return

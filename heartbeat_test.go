@@ -250,3 +250,23 @@ func TestSendHeartbeatWriteFailureClosesConn(t *testing.T) {
 		t.Error("心跳写失败后 conn 应被置空")
 	}
 }
+
+// LastReceivedAt 应在收到服务端数据（认证 ACK / 心跳 ACK）后更新，用于观测半开连接僵尸窗口。
+func TestLastReceivedAtUpdates(t *testing.T) {
+	srv := newFakeWSServer(t)
+	bot, _, _ := newTestClient(t, srv, 50)
+
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !bot.LastReceivedAt().IsZero() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("认证成功后 LastReceivedAt 应已更新（非零）")
+}

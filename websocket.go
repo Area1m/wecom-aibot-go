@@ -14,6 +14,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// defaultWriteTimeout 是发送 WebSocket 帧的写超时兜底：正常帧毫秒级写完，10s 仅用于
+// 防止对端停止读数据时 WriteMessage 永久阻塞（见 sendRawFrame）。
+const defaultWriteTimeout = 10 * time.Second
+
 type wsConnection struct {
 	cfg    Config
 	logger Logger
@@ -33,6 +37,7 @@ type wsConnection struct {
 	heartbeatCancel   context.CancelFunc
 
 	missedPongCount atomic.Int32 // 连续未收到心跳 ACK 的次数（对齐官方 Node SDK 的死连接判据）
+	lastReceivedAt  atomic.Int64 // 最近一次收到服务端数据的时刻（UnixNano，含心跳 ACK），用于观测半开连接僵尸窗口
 
 	replyQueueMu sync.Mutex
 	replyQueues  map[string]*replyQueue
@@ -193,6 +198,10 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 			return fmt.Sprintf("连接断开: %v", err), nil
 		}
 
+		// 每成功读到一帧（含心跳 ACK）就刷新 liveness 时间戳，供 LastReceivedAt 观测
+		// 半开连接：从真死到心跳判死之间这里会停止更新，从而暴露僵尸窗口。
+		w.lastReceivedAt.Store(time.Now().UnixNano())
+
 		var frame WsFrameRaw
 		if err := json.Unmarshal(data, &frame); err != nil {
 			w.emitError(fmt.Errorf("解析消息失败: %w", err))
@@ -252,8 +261,8 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 			return
 		}
 
-		// 心跳 ACK：服务端回显 ping 的 req_id，但当前服务端并不会回（见 sendHeartbeat）。
-		// 这里只按 ACK 静默处理、不透传给消息处理器，避免把 ACK 当成消息。
+		// 心跳 ACK：服务端会回 errcode=0 的 ACK（req_id 透传 ping_ 前缀，无 cmd 字段）。
+		// 收到即清零连续未 ACK 计数；静默处理、不透传给消息处理器，避免把 ACK 当成消息。
 		if strings.HasPrefix(reqID, WsCmdHeartbeat+"_") {
 			if frame.ErrCode != 0 {
 				w.logger.Warn("心跳 ACK 异常: reqid=%s errcode=%d errmsg=%s", reqID, frame.ErrCode, frame.ErrMsg)
@@ -299,6 +308,15 @@ func (w *wsConnection) disconnect() {
 func (w *wsConnection) isConnected() bool {
 	conn := w.getConn()
 	return conn != nil
+}
+
+// lastReceivedAtTime 返回最近一次收到服务端数据的时刻；从未收到返回零值。
+func (w *wsConnection) lastReceivedAtTime() time.Time {
+	ns := w.lastReceivedAt.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 func (w *wsConnection) sendReply(reqID string, body any, cmd string) (WsFrameRaw, error) {
@@ -435,6 +453,10 @@ func (w *wsConnection) sendRawFrame(frame WsFrame) error {
 
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
+	// 写超时兜底：对端「活着但停止读、TCP 接收窗口打满」时 WriteMessage 会永久阻塞，
+	// 进而占住 writeMu 卡死后续心跳与回复。设一个宽裕的写期限，超时即按写失败走重连。
+	_ = conn.SetWriteDeadline(time.Now().Add(defaultWriteTimeout))
+	defer conn.SetWriteDeadline(time.Time{})
 	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
 		return fmt.Errorf("发送 WebSocket 帧失败: %w", err)
 	}

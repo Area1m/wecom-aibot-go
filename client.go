@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // ErrNotConnected 表示 WebSocket 当前不可用——尚未连接、连接已断开或已手动关闭。
@@ -166,6 +167,15 @@ func (c *Client) Disconnect() {
 // IsConnected 返回当前 WebSocket 是否处于已连接状态（重连等待期间为 false）。
 func (c *Client) IsConnected() bool {
 	return c.ws.isConnected()
+}
+
+// LastReceivedAt 返回最近一次收到服务端数据（含心跳 ACK）的时刻；从未收到返回零值。
+//
+// IsConnected 只反映连接对象是否存在；而「半开连接」从真死到心跳判死（约 2×心跳间隔）
+// 之间 IsConnected 仍为 true。用 time.Since(LastReceivedAt()) 超过 2×心跳间隔来判定
+// 「连接虽在但已收不到数据」的僵尸窗口，是比 IsConnected 更可靠的存活判据。
+func (c *Client) LastReceivedAt() time.Time {
+	return c.ws.lastReceivedAtTime()
 }
 
 // API 返回底层 HTTP 能力客户端（目前用于文件下载等非 WebSocket 请求）。

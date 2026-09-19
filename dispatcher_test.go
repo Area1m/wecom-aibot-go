@@ -20,7 +20,7 @@ func eventFrame(reqID, eventType string) WsFrameRaw {
 		Body: mustBody(map[string]any{
 			"msgid": "e1", "create_time": 1, "aibotid": "bot",
 			"msgtype": "event",
-			"event":   map[string]any{"eventtype": eventType, "event_key": "k", "task_id": "t"},
+			"event":   map[string]any{"eventtype": eventType},
 		}),
 	}
 }
@@ -91,6 +91,36 @@ func TestDispatchEventUnknownType(t *testing.T) {
 	m := recvTimeout(t, generic, "通用 event 回调")
 	if m.Event.EventType != "some_unknown_event" {
 		t.Errorf("未知 eventtype 应原样透传: %+v", m)
+	}
+}
+
+// 模板卡片事件的 card_type / event_key / task_id 嵌套在 event.template_card_event 子对象里，
+// 而不是 event 顶层（据真实报文实测，官方 SDK 类型注解标错）。验证反序列化后能从嵌套位置取出。
+func TestTemplateCardEventNestedParse(t *testing.T) {
+	body := mustBody(map[string]any{
+		"msgid": "e1", "create_time": 1, "aibotid": "bot",
+		"chattype": "single", "from": map[string]any{"userid": "u"},
+		"msgtype": "event",
+		"event": map[string]any{
+			"eventtype": "template_card_event",
+			"template_card_event": map[string]any{
+				"card_type": "button_interaction",
+				"event_key": "wecom_confirm_xxx",
+				"task_id":   "wecom_renmeng_xxx",
+			},
+		},
+	})
+
+	var msg EventMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+	tc := msg.Event.TemplateCardEvent
+	if tc == nil {
+		t.Fatal("Event.TemplateCardEvent 应为非 nil")
+	}
+	if tc.EventKey != "wecom_confirm_xxx" || tc.TaskID != "wecom_renmeng_xxx" || tc.CardType != "button_interaction" {
+		t.Errorf("嵌套字段解析错误: %+v", tc)
 	}
 }
 

@@ -216,11 +216,22 @@ type VideoMessage struct {
 	Video VideoContent `json:"video"`
 }
 
-// EventContent 是事件内容。
+// EventContent 是事件内容。event 下除 eventtype 外，其余字段随事件类型而异：
+// 模板卡片事件的 card_type / event_key / task_id 嵌套在 event.template_card_event 子对象里
+// （据真实报文实测；官方 Node/Python SDK 的类型注解把它们标成 event 顶层是错误的）。
 type EventContent struct {
 	EventType string `json:"eventtype"`
-	EventKey  string `json:"event_key,omitempty"`
-	TaskID    string `json:"task_id,omitempty"`
+	// 模板卡片事件详情，仅 eventtype=template_card_event 时存在。
+	TemplateCardEvent *TemplateCardEventData `json:"template_card_event,omitempty"`
+}
+
+// TemplateCardEventData 是模板卡片事件详情（嵌套在 event.template_card_event）。
+type TemplateCardEventData struct {
+	CardType string `json:"card_type,omitempty"` // 模板卡片类型（button_interaction / vote_interaction / multiple_interaction 等）
+	EventKey string `json:"event_key,omitempty"` // 用户点击的按钮 key
+	TaskID   string `json:"task_id,omitempty"`   // 交互模板卡片的 task_id
+	// SelectedItems 是选择框提交数据（vote/multiple interaction 卡片），内部结构随 card_type 而定，保留原始 JSON。
+	SelectedItems json.RawMessage `json:"selected_items,omitempty"`
 }
 
 // EventMessage 是事件消息（进入会话、模板卡片、用户反馈等），ReqID 用于回复。

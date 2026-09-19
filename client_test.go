@@ -29,6 +29,9 @@ func TestNewClientFillsDefaults(t *testing.T) {
 	if bot.cfg.MaxReconnectAttempts != DefaultMaxReconnect {
 		t.Errorf("MaxReconnectAttempts 默认值错误: %d", bot.cfg.MaxReconnectAttempts)
 	}
+	if bot.cfg.MaxAuthFailureAttempts != DefaultMaxAuthFailure {
+		t.Errorf("MaxAuthFailureAttempts 默认值错误: %d", bot.cfg.MaxAuthFailureAttempts)
+	}
 	if bot.cfg.RequestTimeoutMS != DefaultRequestTimeout {
 		t.Errorf("RequestTimeoutMS 默认值错误: %d", bot.cfg.RequestTimeoutMS)
 	}

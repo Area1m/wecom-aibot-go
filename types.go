@@ -7,6 +7,7 @@ const (
 	DefaultWSURL             = "wss://openws.work.weixin.qq.com"
 	DefaultReconnectInterval = 1000
 	DefaultMaxReconnect      = 10
+	DefaultMaxAuthFailure    = 5
 	DefaultHeartbeatInterval = 30000
 	DefaultRequestTimeout    = 10000
 	DefaultTCPUserTimeout    = 60000     // 半开连接检测时限（TCP_USER_TIMEOUT，毫秒）
@@ -58,16 +59,17 @@ type Config struct {
 	BotID  string // 机器人 ID（必填）
 	Secret string // 机器人 Secret（必填）
 
-	ReconnectIntervalMS  int            // 重连基础间隔（毫秒），默认 1000，按 2 倍指数退避、上限 30s
-	MaxReconnectAttempts int            // 最大重连次数，默认 10；-1 表示无限重连
-	HeartbeatIntervalMS  int            // 心跳（ping）间隔（毫秒），默认 30000
-	RequestTimeoutMS     int            // HTTP 请求超时（毫秒），默认 10000，用于文件下载
-	TCPUserTimeoutMS     int            // 半开连接检测时限（毫秒），默认 60000；已发送数据超时未 ACK 即断开重连，仅 Linux 生效
-	AuthTimeoutMS        int            // 等待订阅 ACK 的读超时（毫秒），默认 15000；超时未收到订阅 ACK 即按断线重连，防止卡 connecting
-	ExtraAuthParams      map[string]any // 附加认证参数（如 scene、plug_version），展开到认证帧 body
-	MaxDownloadBytes     int            // 单次文件下载上限（字节），默认 100 MiB，防止异常大响应打爆内存
-	WSURL                string         // WebSocket 地址，默认 wss://openws.work.weixin.qq.com
-	Logger               Logger         // 日志实现，默认 DefaultLogger
+	ReconnectIntervalMS    int            // 重连基础间隔（毫秒），默认 1000，按 2 倍指数退避、上限 30s
+	MaxReconnectAttempts   int            // 最大重连次数（连接断开），默认 10；-1 表示无限重连
+	MaxAuthFailureAttempts int            // 最大认证失败重试次数，默认 5；-1 表示无限；与重连预算独立（对齐官方 Node SDK）
+	HeartbeatIntervalMS    int            // 心跳（ping）间隔（毫秒），默认 30000
+	RequestTimeoutMS       int            // HTTP 请求超时（毫秒），默认 10000，用于文件下载
+	TCPUserTimeoutMS       int            // 半开连接检测时限（毫秒），默认 60000；已发送数据超时未 ACK 即断开重连，仅 Linux 生效
+	AuthTimeoutMS          int            // 等待订阅 ACK 的读超时（毫秒），默认 15000；超时未收到订阅 ACK 即按断线重连，防止卡 connecting
+	ExtraAuthParams        map[string]any // 附加认证参数（如 scene、plug_version），展开到认证帧 body
+	MaxDownloadBytes       int            // 单次文件下载上限（字节），默认 100 MiB，防止异常大响应打爆内存
+	WSURL                  string         // WebSocket 地址，默认 wss://openws.work.weixin.qq.com
+	Logger                 Logger         // 日志实现，默认 DefaultLogger
 }
 
 // WsHeaders 是所有 WebSocket 帧的头部，req_id 用于把请求与响应/ACK 关联起来。

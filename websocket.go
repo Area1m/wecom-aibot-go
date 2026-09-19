@@ -30,14 +30,17 @@ type wsConnection struct {
 	started     atomic.Bool
 	manualClose atomic.Bool
 
-	reconnectAttempts int
-	reconnectMu       sync.Mutex
+	reconnectAttempts   int // 连接断开（非认证失败）的重连计数，由 reconnectMu 保护
+	authFailureAttempts int // 认证失败的重连计数，由 reconnectMu 保护；与重连预算独立（对齐官方 Node SDK）
+	reconnectMu         sync.Mutex
 
 	heartbeatCancelMu sync.Mutex
 	heartbeatCancel   context.CancelFunc
 
 	missedPongCount atomic.Int32 // 连续未收到心跳 ACK 的次数（对齐官方 Node SDK 的死连接判据）
 	lastReceivedAt  atomic.Int64 // 最近一次收到服务端数据的时刻（UnixNano，含心跳 ACK），用于观测半开连接僵尸窗口
+
+	lastCloseWasAuthFailure atomic.Bool // 最近一次连接关闭是否因认证失败，用于选择独立计数器
 
 	replyQueueMu sync.Mutex
 	replyQueues  map[string]*replyQueue
@@ -90,8 +93,8 @@ func (w *wsConnection) start(ctx context.Context) {
 		return
 	}
 	w.manualClose.Store(false)
-	// 每次重新启动都清零重连计数：否则上一轮重连耗尽后，Disconnect + Connect
-	// 重启时 reconnectAttempts 仍停在 max，拨号失败一次就立刻再次放弃。
+	// 每次重新启动都清零重连/认证失败计数：否则上一轮耗尽后 Disconnect + Connect
+	// 重启时计数器仍停在 max，拨号失败一次就立刻再次放弃。
 	w.resetReconnectAttempts()
 	go w.run(ctx)
 }
@@ -104,15 +107,15 @@ func (w *wsConnection) run(ctx context.Context) {
 		}
 
 		if !first {
-			attempt, ok := w.registerReconnectAttempt()
-			if !ok {
+			attempt, err := w.registerReconnectAttempt()
+			if err != nil {
 				// 复位启动状态：否则 give-up 后 started 仍为 true，Connect() 会静默空操作，
 				// 客户端永久假死，只能靠 Disconnect()+Connect() 手动复活。
 				w.started.Store(false)
 				if w.onStopped != nil {
 					w.onStopped()
 				}
-				w.emitError(ErrReconnectExhausted)
+				w.emitError(err)
 				return
 			}
 			delay := w.nextReconnectDelay(attempt)
@@ -171,6 +174,8 @@ func (w *wsConnection) runSession(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("建立 WebSocket 连接失败: %w", err)
 	}
 
+	// 新连接建立即清除「认证失败」标记：只有本会话内认证被拒（errcode!=0）才会再置位。
+	w.lastCloseWasAuthFailure.Store(false)
 	w.setConn(conn)
 	w.emitConnected()
 
@@ -241,6 +246,9 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 		if strings.HasPrefix(reqID, WsCmdSubscribe+"_") {
 			if frame.ErrCode != 0 {
 				w.emitError(fmt.Errorf("认证失败: errcode=%d errmsg=%s", frame.ErrCode, frame.ErrMsg))
+				// 标记本次关闭为「认证失败」，让重连走独立的 authFailureAttempts 预算（对齐官方
+				// Node SDK），避免认证抖动吞掉正常断线重连预算。
+				w.lastCloseWasAuthFailure.Store(true)
 				// 认证被拒绝时主动关闭连接，让读循环返回并走正常重连；否则会停在
 				// 「已连接但未认证」的假死态——无心跳、无消息，IsConnected 仍为 true。
 				if conn := w.getConn(); conn != nil {
@@ -249,8 +257,8 @@ func (w *wsConnection) handleFrame(ctx context.Context, frame WsFrameRaw) {
 				}
 				return
 			}
-			// 认证成功才算一次稳定连接，此时才清零重连失败计数。不能放在拨号成功处：
-			// 那样「拨号成功但认证失败」每次都会清零，绕过 MaxReconnectAttempts 无限重试。
+			// 认证成功才算一次稳定连接，此时才清零重连/认证失败计数。不能放在拨号成功处：
+			// 那样「拨号成功但认证失败」每次都会清零，绕过 MaxAuthFailureAttempts 无限重试。
 			w.resetReconnectAttempts()
 			// 认证成功：清除「等待订阅 ACK」的读超时，恢复「无读超时 + 心跳保活」的常态。
 			if c := w.getConn(); c != nil {
@@ -475,22 +483,35 @@ func (w *wsConnection) getConn() *websocket.Conn {
 	return w.conn
 }
 
-func (w *wsConnection) registerReconnectAttempt() (int, bool) {
+// registerReconnectAttempt 根据上次断开类型选择独立的计数器与上限（对齐官方 Node SDK）：
+// 认证失败走 authFailureAttempts / MaxAuthFailureAttempts，连接断开走 reconnectAttempts /
+// MaxReconnectAttempts，二者互不占用。返回本次尝试序号；计数耗尽时返回对应错误。
+func (w *wsConnection) registerReconnectAttempt() (int, error) {
 	w.reconnectMu.Lock()
 	defer w.reconnectMu.Unlock()
 
+	if w.lastCloseWasAuthFailure.Load() {
+		max := w.cfg.MaxAuthFailureAttempts
+		if max != -1 && w.authFailureAttempts >= max {
+			return 0, ErrAuthFailureExhausted
+		}
+		w.authFailureAttempts++
+		return w.authFailureAttempts, nil
+	}
+
 	max := w.cfg.MaxReconnectAttempts
 	if max != -1 && w.reconnectAttempts >= max {
-		return 0, false
+		return 0, ErrReconnectExhausted
 	}
 	w.reconnectAttempts++
-	return w.reconnectAttempts, true
+	return w.reconnectAttempts, nil
 }
 
 func (w *wsConnection) resetReconnectAttempts() {
 	w.reconnectMu.Lock()
 	defer w.reconnectMu.Unlock()
 	w.reconnectAttempts = 0
+	w.authFailureAttempts = 0
 }
 
 func (w *wsConnection) emitConnected() {

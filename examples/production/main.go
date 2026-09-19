@@ -20,11 +20,12 @@ func main() {
 	}
 
 	bot, err := wecomaibot.NewClient(wecomaibot.Config{
-		BotID:                botID,
-		Secret:               secret,
-		MaxReconnectAttempts: -1,
-		ReconnectIntervalMS:  1000,
-		HeartbeatIntervalMS:  30000,
+		BotID:                  botID,
+		Secret:                 secret,
+		MaxReconnectAttempts:   -1,
+		MaxAuthFailureAttempts: -1, // 认证失败也无限重试（与重连预算独立）
+		ReconnectIntervalMS:    1000,
+		HeartbeatIntervalMS:    30000,
 	})
 	if err != nil {
 		log.Fatalf("创建客户端失败: %v", err)

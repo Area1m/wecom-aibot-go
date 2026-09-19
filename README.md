@@ -85,7 +85,8 @@ func main() {
 - `BotID`：机器人 ID（必填）
 - `Secret`：机器人 Secret（必填）
 - `ReconnectIntervalMS`：重连基础间隔，默认 `1000`
-- `MaxReconnectAttempts`：最大重连次数，默认 `10`；`-1` 表示无限；`0` 同样取默认 `10`
+- `MaxReconnectAttempts`：最大重连次数（连接断开），默认 `10`；`-1` 表示无限；`0` 同样取默认 `10`
+- `MaxAuthFailureAttempts`：认证失败最大重试次数，默认 `5`；`-1` 表示无限；`0` 同样取默认 `5`；与重连预算独立
 - `HeartbeatIntervalMS`：心跳间隔，默认 `30000`
 - `RequestTimeoutMS`：HTTP 下载超时，默认 `10000`
 - `TCPUserTimeoutMS`：半开连接检测时限（毫秒），默认 `60000`，仅 Linux 生效

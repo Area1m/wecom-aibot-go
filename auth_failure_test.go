@@ -90,9 +90,9 @@ func TestAuthFailureTriggersReconnect(t *testing.T) {
 	}
 }
 
-// 认证持续失败时，重连计数必须递增并最终命中 MaxReconnectAttempts 后放弃；
+// 认证持续失败时，独立的认证失败计数必须递增并最终命中 MaxAuthFailureAttempts 后放弃，
 // 而不是在每次拨号成功后清零、无限重试。
-func TestAuthFailureRespectsMaxReconnect(t *testing.T) {
+func TestAuthFailureRespectsMaxAuthFailure(t *testing.T) {
 	var subscribes int32
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,13 +121,13 @@ func TestAuthFailureRespectsMaxReconnect(t *testing.T) {
 
 	const maxAttempts = 3
 	bot, err := NewClient(Config{
-		BotID:                "bot",
-		Secret:               "secret",
-		WSURL:                "ws" + strings.TrimPrefix(srv.URL, "http"),
-		ReconnectIntervalMS:  50,
-		MaxReconnectAttempts: maxAttempts,
-		HeartbeatIntervalMS:  200,
-		Logger:               silentTestLogger{},
+		BotID:                  "bot",
+		Secret:                 "secret",
+		WSURL:                  "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ReconnectIntervalMS:    50,
+		MaxAuthFailureAttempts: maxAttempts,
+		HeartbeatIntervalMS:    200,
+		Logger:                 silentTestLogger{},
 	})
 	if err != nil {
 		t.Fatalf("创建客户端失败: %v", err)
@@ -135,7 +135,7 @@ func TestAuthFailureRespectsMaxReconnect(t *testing.T) {
 
 	var gaveUp int32
 	bot.OnError(func(_ context.Context, err error) {
-		if strings.Contains(err.Error(), "超过最大重连次数") {
+		if strings.Contains(err.Error(), "超过最大认证失败重试次数") {
 			atomic.AddInt32(&gaveUp, 1)
 		}
 	})
@@ -160,6 +160,80 @@ func TestAuthFailureRespectsMaxReconnect(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if got := atomic.LoadInt32(&subscribes); got != int32(maxAttempts+1) {
 		t.Errorf("认证次数应停在 %d，实际 %d", maxAttempts+1, got)
+	}
+}
+
+// 认证失败预算与重连预算互不占用：认证失败消耗 MaxAuthFailureAttempts 而非 MaxReconnectAttempts。
+// 这里把 MaxReconnectAttempts 设成 1——若认证失败错误地占用重连预算，认证会停在 2 次（1 初始 + 1 重连）；
+// 正确行为是走 MaxAuthFailureAttempts=3，认证 4 次（1 初始 + 3 重试）后才放弃。
+func TestAuthFailureDoesNotConsumeReconnectBudget(t *testing.T) {
+	var subscribes int32
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var frame WsFrameRaw
+			if err := json.Unmarshal(data, &frame); err != nil {
+				return
+			}
+			if !strings.HasPrefix(frame.Headers.ReqID, WsCmdSubscribe+"_") {
+				continue
+			}
+			atomic.AddInt32(&subscribes, 1)
+			_ = conn.WriteJSON(WsFrameRaw{Headers: WsHeaders{ReqID: frame.Headers.ReqID}, ErrCode: 1, ErrMsg: "bad secret"})
+		}
+	}))
+	defer srv.Close()
+
+	const authMax = 3
+	bot, err := NewClient(Config{
+		BotID:                  "bot",
+		Secret:                 "secret",
+		WSURL:                  "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ReconnectIntervalMS:    50,
+		MaxReconnectAttempts:   1, // 重连预算极小，用于证明认证失败不占它
+		MaxAuthFailureAttempts: authMax,
+		HeartbeatIntervalMS:    200,
+		Logger:                 silentTestLogger{},
+	})
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+
+	var gaveUp int32
+	bot.OnError(func(_ context.Context, err error) {
+		if strings.Contains(err.Error(), "超过最大认证失败重试次数") {
+			atomic.AddInt32(&gaveUp, 1)
+		}
+	})
+
+	if err := bot.Connect(); err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer bot.Disconnect()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&gaveUp) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&gaveUp) == 0 {
+		t.Fatalf("认证失败应在 %d 次重试后放弃: subscribes=%d", authMax, atomic.LoadInt32(&subscribes))
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if got := atomic.LoadInt32(&subscribes); got != int32(authMax+1) {
+		t.Errorf("认证次数应走 MaxAuthFailureAttempts(%d) 而非 MaxReconnectAttempts(1): 实际 %d", authMax, got)
 	}
 }
 
@@ -194,13 +268,13 @@ func TestReconnectAfterGiveUp(t *testing.T) {
 
 	const maxAttempts = 2
 	bot, err := NewClient(Config{
-		BotID:                "bot",
-		Secret:               "secret",
-		WSURL:                "ws" + strings.TrimPrefix(srv.URL, "http"),
-		ReconnectIntervalMS:  50,
-		MaxReconnectAttempts: maxAttempts,
-		HeartbeatIntervalMS:  200,
-		Logger:               silentTestLogger{},
+		BotID:                  "bot",
+		Secret:                 "secret",
+		WSURL:                  "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ReconnectIntervalMS:    50,
+		MaxAuthFailureAttempts: maxAttempts,
+		HeartbeatIntervalMS:    200,
+		Logger:                 silentTestLogger{},
 	})
 	if err != nil {
 		t.Fatalf("创建客户端失败: %v", err)
@@ -209,7 +283,7 @@ func TestReconnectAfterGiveUp(t *testing.T) {
 
 	var gaveUp int32
 	bot.OnError(func(_ context.Context, err error) {
-		if strings.Contains(err.Error(), "超过最大重连次数") {
+		if strings.Contains(err.Error(), "超过最大认证失败重试次数") {
 			atomic.AddInt32(&gaveUp, 1)
 		}
 	})

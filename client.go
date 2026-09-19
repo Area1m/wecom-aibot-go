@@ -17,6 +17,10 @@ var ErrNotConnected = errors.New("WebSocket 连接不可用")
 // 可用 errors.Is 判断，对齐官方 Node SDK 的 WSReconnectExhaustedError。
 var ErrReconnectExhausted = errors.New("超过最大重连次数")
 
+// ErrAuthFailureExhausted 表示认证失败重试次数耗尽（超过 MaxAuthFailureAttempts），客户端彻底停止。
+// 可用 errors.Is 判断，对齐官方 Node SDK 的 WSAuthFailureError。
+var ErrAuthFailureExhausted = errors.New("超过最大认证失败重试次数")
+
 // Client 是企业微信智能机器人客户端：负责连接、认证、重连、消息分发与回复发送。
 // 用 NewClient 创建，注册好 OnXxx 回调后调用 Connect 开始工作。
 type Client struct {
@@ -74,6 +78,9 @@ func fillDefaultConfig(cfg Config) (Config, error) {
 	}
 	if cfg.MaxReconnectAttempts == 0 {
 		cfg.MaxReconnectAttempts = DefaultMaxReconnect
+	}
+	if cfg.MaxAuthFailureAttempts == 0 {
+		cfg.MaxAuthFailureAttempts = DefaultMaxAuthFailure
 	}
 	if cfg.HeartbeatIntervalMS <= 0 {
 		cfg.HeartbeatIntervalMS = DefaultHeartbeatInterval
@@ -203,7 +210,7 @@ func (c *Client) OnReconnecting(handler func(context.Context, int)) {
 	c.dispatcher.addReconnectingHandler(handler)
 }
 
-// OnError 注册错误回调（建连失败、认证失败、超过最大重连次数等）。
+// OnError 注册错误回调（建连失败、认证失败、超过最大重连/认证失败重试次数等）。
 func (c *Client) OnError(handler func(context.Context, error)) {
 	c.dispatcher.addErrorHandler(handler)
 }

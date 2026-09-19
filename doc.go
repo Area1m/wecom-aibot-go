@@ -33,4 +33,7 @@
 //
 // 心跳保活：服务端会回 ping 的 ACK（errcode:0），SDK 以「连续 2 次未收到 ACK」判定死连接并
 // 重连（对齐官方 Node SDK）；写失败或服务端被动断开同样会触发重连，半开连接由 TCP_USER_TIMEOUT 兜底。
+//
+// 重连预算分两本账（对齐官方 Node SDK）：认证失败走 MaxAuthFailureAttempts（默认 5），连接断开走
+// MaxReconnectAttempts（默认 10），互不占用——认证抖动不会吞掉断线重连预算。
 package wecomaibot
